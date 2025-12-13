@@ -1,0 +1,220 @@
+// Cargo.toml dependencies you'll need:
+// [dependencies]
+// clap = { version = "4.0", features = ["derive"] }
+// serde = { version = "1.0", features = ["derive"] }
+// serde_json = "1.0"
+// chrono = "0.4"
+// regex = "1.0"
+// colored = "2.0"
+// tui = "0.19"  // for terminal UI
+// crossterm = "0.27"
+// anyhow = "1.0"  // for error handling
+
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+
+/// jlog - Advanced journalctl log analyzer
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Analyze logs from the last N hours
+    #[arg(short, long)]
+    hours: Option<u32>,
+    
+    /// Filter by systemd unit/service
+    #[arg(short = 'u', long)]
+    unit: Option<String>,
+    
+    /// Minimum priority (0=emerg, 7=debug)
+    #[arg(short, long, default_value = "3")]
+    priority: u8,
+    
+    /// Show top N most common errors
+    #[arg(short = 'n', long, default_value = "10")]
+    top: usize,
+    
+    /// Pattern to search for (regex)
+    #[arg(long)]
+    pattern: Option<String>,
+    
+    /// Enable real-time monitoring mode
+    #[arg(long)]
+    follow: bool,
+    
+    /// Generate HTML report
+    #[arg(long)]
+    report: Option<String>,
+}
+
+/// Represents a single journal entry
+#[derive(Debug, Deserialize, Serialize)]
+struct JournalEntry {
+    #[serde(rename = "__REALTIME_TIMESTAMP")]
+    timestamp: String,
+    
+    #[serde(rename = "MESSAGE")]
+    message: Option<String>,
+    
+    #[serde(rename = "PRIORITY")]
+    priority: Option<String>,
+    
+    #[serde(rename = "_SYSTEMD_UNIT")]
+    unit: Option<String>,
+    
+    #[serde(rename = "SYSLOG_IDENTIFIER")]
+    identifier: Option<String>,
+}
+
+/// Statistics about analyzed logs
+#[derive(Debug, Default)]
+struct LogStats {
+    total_entries: usize,
+    by_priority: HashMap<u8, usize>,
+    by_unit: HashMap<String, UnitStats>,
+    error_patterns: HashMap<String, usize>,
+    time_buckets: Vec<TimeBucket>,
+}
+
+#[derive(Debug, Default)]
+struct UnitStats {
+    total: usize,
+    errors: usize,
+    warnings: usize,
+    last_seen: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug)]
+struct TimeBucket {
+    timestamp: DateTime<Utc>,
+    count: usize,
+}
+
+struct LogAnalyzer {
+    stats: LogStats,
+}
+
+impl LogAnalyzer {
+    fn new() -> Self {
+        Self {
+            stats: LogStats::default(),
+        }
+    }
+    
+    /// Process a journal entry and update statistics
+    fn process_entry(&mut self, entry: &JournalEntry) {
+        self.stats.total_entries += 1;
+        
+        // Update priority stats
+        if let Some(priority_str) = &entry.priority {
+            if let Ok(priority) = priority_str.parse::<u8>() {
+                *self.stats.by_priority.entry(priority).or_insert(0) += 1;
+            }
+        }
+        
+        // Update unit stats
+        if let Some(unit) = &entry.unit {
+            let unit_stats = self.stats.by_unit
+                .entry(unit.clone())
+                .or_insert_with(UnitStats::default);
+            
+            unit_stats.total += 1;
+            
+            if let Some(priority_str) = &entry.priority {
+                if let Ok(priority) = priority_str.parse::<u8>() {
+                    if priority <= 3 {
+                        unit_stats.errors += 1;
+                    } else if priority == 4 {
+                        unit_stats.warnings += 1;
+                    }
+                }
+            }
+        }
+        
+        // Extract and count error patterns
+        if let Some(message) = &entry.message {
+            if let Some(priority_str) = &entry.priority {
+                if let Ok(priority) = priority_str.parse::<u8>() {
+                    if priority <= 4 {
+                        // Simple pattern extraction (first 50 chars)
+                        let pattern = message.chars().take(50).collect::<String>();
+                        *self.stats.error_patterns.entry(pattern).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Display summary statistics
+    fn display_summary(&self) {
+        println!("\n=== Log Analysis Summary ===");
+        println!("Total entries: {}", self.stats.total_entries);
+        
+        println!("\n--- By Priority ---");
+        let priority_names = [
+            "Emergency", "Alert", "Critical", "Error",
+            "Warning", "Notice", "Info", "Debug"
+        ];
+        
+        for priority in 0..=7 {
+            if let Some(count) = self.stats.by_priority.get(&priority) {
+                println!("{}: {}", priority_names[priority as usize], count);
+            }
+        }
+        
+        println!("\n--- Top Services by Log Volume ---");
+        let mut units: Vec<_> = self.stats.by_unit.iter().collect();
+        units.sort_by(|a, b| b.1.total.cmp(&a.1.total));
+        
+        for (unit, stats) in units.iter().take(10) {
+            println!("{}: {} total, {} errors, {} warnings",
+                unit, stats.total, stats.errors, stats.warnings);
+        }
+        
+        println!("\n--- Most Common Error Patterns ---");
+        let mut patterns: Vec<_> = self.stats.error_patterns.iter().collect();
+        patterns.sort_by(|a, b| b.1.cmp(a.1));
+        
+        for (pattern, count) in patterns.iter().take(10) {
+            println!("[{}x] {}", count, pattern);
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    
+    println!("jlog - Journalctl Log Analyzer");
+    println!("Analyzing logs...\n");
+    
+    // Build journalctl command
+    let mut cmd = std::process::Command::new("journalctl");
+    cmd.arg("-o").arg("json"); // JSON output
+    
+    if let Some(hours) = args.hours {
+        cmd.arg(format!("--since={} hours ago", hours));
+    }
+    
+    if let Some(unit) = &args.unit {
+        cmd.arg("-u").arg(unit);
+    }
+    
+    cmd.arg(format!("-p{}", args.priority));
+    
+    // Execute and parse
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    let mut analyzer = LogAnalyzer::new();
+    
+    for line in stdout.lines() {
+        if let Ok(entry) = serde_json::from_str::<JournalEntry>(line) {
+            analyzer.process_entry(&entry);
+        }
+    }
+    
+    analyzer.display_summary();
+    
+    Ok(())
+}
