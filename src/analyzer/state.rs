@@ -20,6 +20,9 @@ pub struct AnalysisState {
     // Time-series data (hour buckets)
     pub time_series: HashMap<String, TimeBucket>,
 
+    // Message trends over time: message -> (time_bucket -> count)
+    pub message_trends: HashMap<String, HashMap<String, usize>>,
+
     // Pattern counters
     pub failed_ssh_count: usize,
     pub restart_count: usize,
@@ -37,6 +40,7 @@ impl AnalysisState {
             entries_by_service: HashMap::new(),
             error_messages: HashMap::new(),
             time_series: HashMap::new(),
+            message_trends: HashMap::new(),
             failed_ssh_count: 0,
             restart_count: 0,
             oom_count: 0,
@@ -73,7 +77,13 @@ impl AnalysisState {
         if priority <= 4 {
             let msg = normalize_regex.normalize(entry.msg());
             if !msg.is_empty() {
-                *self.error_messages.entry(msg).or_insert(0) += 1;
+                *self.error_messages.entry(msg.clone()).or_insert(0) += 1;
+
+                // Track message trend over time
+                if let Some(bucket_key) = entry.hour_bucket() {
+                    let msg_buckets = self.message_trends.entry(msg).or_insert_with(HashMap::new);
+                    *msg_buckets.entry(bucket_key).or_insert(0) += 1;
+                }
             }
         }
 
@@ -132,6 +142,31 @@ impl AnalysisState {
             .collect();
         series.sort_by(|a, b| a.0.cmp(&b.0));
         series
+    }
+
+    /// Get message trends for top N messages, returns (message, sorted_time_buckets with counts)
+    pub fn top_message_trends(&self, n: usize) -> Vec<(String, Vec<(String, usize)>)> {
+        let top_msgs = self.top_errors(n);
+
+        top_msgs.into_iter().map(|(msg, _total)| {
+            let trend_data = self.message_trends.get(&msg)
+                .map(|buckets| {
+                    let mut sorted: Vec<_> = buckets.iter()
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+                    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                    sorted
+                })
+                .unwrap_or_default();
+            (msg, trend_data)
+        }).collect()
+    }
+
+    /// Get all unique time buckets sorted
+    pub fn all_time_buckets(&self) -> Vec<String> {
+        let mut buckets: Vec<_> = self.time_series.keys().cloned().collect();
+        buckets.sort();
+        buckets
     }
 
     /// Get detected patterns for reporting
