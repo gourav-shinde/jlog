@@ -9,6 +9,8 @@ Advanced journalctl log analyzer with pattern detection and real-time monitoring
 - **Real-time Monitoring** - Tail logs and see events as they happen
 - **Smart Filtering** - Filter by service, priority level, or regex patterns
 - **Color-coded Output** - Visual priority indicators and bar charts
+- **HTML Reports** - Generate interactive reports with Chart.js visualizations
+- **Live Web Server** - View analysis results in your browser with auto-refresh
 
 ## Installation
 
@@ -41,6 +43,9 @@ jlog analyze --path /tmp/logs.json
 | `--unit` | `-u` | Filter by systemd unit/service name | None |
 | `--top` | `-n` | Show top N errors/services | `10` |
 | `--pattern` | | Regex pattern to filter messages | None |
+| `--report` | | Generate HTML report to specified file | None |
+| `--serve` | | Start live web server to view results | `false` |
+| `--port` | | Port for live server | `8080` |
 
 #### Examples
 
@@ -59,6 +64,18 @@ jlog analyze --path logs.json --top 20
 
 # Combine filters
 jlog analyze --path logs.json --unit sshd --priority 4 --pattern "invalid user"
+
+# Generate HTML report
+jlog analyze --path logs.json --priority 7 --report report.html
+
+# Start live web server
+jlog analyze --path logs.json --serve
+
+# Start server on custom port
+jlog analyze --path logs.json --serve --port 3000
+
+# Generate report AND start server
+jlog analyze --path logs.json --report report.html --serve
 ```
 
 #### Sample Output
@@ -97,6 +114,36 @@ TOP ERROR MESSAGES
   🔴 Out of Memory: 3 OOM killer events
   🟡 Connection Timeouts: 89 timeout events
 ```
+
+### HTML Reports & Live Server
+
+Generate interactive HTML reports with charts and visualizations.
+
+#### Static HTML Report
+
+```bash
+jlog analyze --path logs.json --report report.html
+```
+
+Creates a self-contained HTML file with:
+- Summary cards (total, errors, warnings, critical)
+- Line chart showing log volume over time
+- Doughnut chart for priority distribution
+- Bar chart for top services
+- Pattern detection alerts
+- Searchable error table
+
+#### Live Web Server
+
+```bash
+jlog analyze --path logs.json --serve
+# Opens at http://127.0.0.1:8080
+```
+
+Starts an HTTP server serving the same interactive report. Useful for:
+- Viewing results in a browser with better formatting
+- Sharing with team members on the same network
+- Quick visualization without saving files
 
 ### Real-time Monitoring
 
@@ -202,16 +249,22 @@ journalctl -o json -u nginx -u postgresql > services.json
 
 ## Roadmap
 
+### Completed
+
+- ✅ Time-series bucketing (logs per hour)
+- ✅ Generate HTML reports with embedded charts
+- ✅ Live web server for interactive viewing
+- ✅ Real-time monitoring mode
+- ✅ Pattern detection (SSH brute force, OOM, timeouts, etc.)
+
 ### Planned Features
 
 **Advanced Analysis**
-- Time-series bucketing (logs per hour/minute)
 - Anomaly detection (baseline vs. current behavior)
 - Service health scoring algorithm
 - Correlation detection ("Service X fails 30 seconds after Service Y restarts")
 
 **Export & Reporting**
-- Generate HTML reports with embedded charts
 - Export to JSON/CSV for further analysis
 - Create summaries suitable for incident reports
 
