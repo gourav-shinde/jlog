@@ -3,6 +3,11 @@ mod cli;
 mod analyze;
 #[path = "parsers/journalctl.rs"]
 mod journalctl;
+mod helper {
+    #[path = "../helper/BufferFileReader.rs"]
+    mod buffer_file_reader;
+    pub use buffer_file_reader::BufferedFileReader;
+}
 
 use cli::{Args, Commands};
 use clap::Parser;

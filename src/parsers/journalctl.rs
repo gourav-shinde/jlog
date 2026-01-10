@@ -1,6 +1,5 @@
 use serde::Deserialize;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use crate::helper::BufferedFileReader;
 
 /// Represents a single journal entry from journalctl JSON output
 #[derive(Debug, Deserialize, Clone)]
@@ -69,23 +68,46 @@ impl JournalEntry {
 }
 
 /// Parse a journalctl JSON file (one JSON object per line)
+/// Uses BufferedFileReader for efficient handling of large files
 pub fn parse_journal_file(path: &str) -> anyhow::Result<Vec<JournalEntry>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let reader = BufferedFileReader::with_buffer_size(path, 64 * 1024); // 64KB buffer for large files
     let mut entries = Vec::new();
+    let mut parse_errors = 0;
 
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    let file_size = reader.file_size().unwrap_or(0);
+    let use_progress = file_size > 10 * 1024 * 1024; // Show progress for files > 10MB
 
-        match serde_json::from_str::<JournalEntry>(&line) {
-            Ok(entry) => entries.push(entry),
-            Err(e) => {
-                eprintln!("Warning: Failed to parse line: {}", e);
+    if use_progress {
+        reader.read_lines_with_progress(
+            |_, line| {
+                if !line.trim().is_empty() {
+                    match serde_json::from_str::<JournalEntry>(line) {
+                        Ok(entry) => entries.push(entry),
+                        Err(_) => parse_errors += 1,
+                    }
+                }
+                Ok(())
+            },
+            |lines, percent| {
+                eprint!("\rParsing: {} lines ({:.1}%)...", lines, percent);
+            },
+            10000, // Update progress every 10k lines
+        )?;
+        eprintln!("\rParsing complete: {} entries loaded.      ", entries.len());
+    } else {
+        reader.read_lines(|_, line| {
+            if !line.trim().is_empty() {
+                match serde_json::from_str::<JournalEntry>(line) {
+                    Ok(entry) => entries.push(entry),
+                    Err(_) => parse_errors += 1,
+                }
             }
-        }
+            Ok(())
+        })?;
+    }
+
+    if parse_errors > 0 {
+        eprintln!("Warning: {} lines failed to parse", parse_errors);
     }
 
     Ok(entries)
