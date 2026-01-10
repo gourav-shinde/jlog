@@ -1,0 +1,64 @@
+Jan 10 16:42:10 gateway-iot-042 systemd[1]: Started Daily apt upgrade and clean activities.
+Jan 10 16:42:11 gateway-iot-042 kernel: nf_conntrack: automatic helper assignment is deprecated and it will be removed soon.
+Jan 10 16:42:12 gateway-iot-042 ModemManager[748]: <info>  [base-manager] couldn't check support for device /sys/devices/platform/soc/3f980000.usb/3f980000.usb1/1-1/1-1.4: unsupported, ignoring
+Jan 10 16:42:15 gateway-iot-042 dhcpcd[812]: eth0: Router Advertisement from fe80::1
+Jan 10 16:42:15 gateway-iot-042 dhcpcd[812]: eth0: adding address 192.168.42.117/24
+Jan 10 16:42:15 gateway-iot-042 dhcpcd[812]: eth0: adding route to 192.168.42.0/24
+Jan 10 16:42:15 gateway-iot-042 dhcpcd[812]: eth0: adding default route via 192.168.42.1
+Jan 10 16:42:18 gateway-iot-042 ntpd[945]: kernel reports TIME_ERROR: 0x4041: Clock Unsynchronized
+Jan 10 16:42:23 gateway-iot-042 ntpd[945]: Initial clock synchronization finished after 12.847 seconds
+Jan 10 16:42:45 gateway-iot-042 kernel: random: crng init done
+Jan 10 16:43:02 gateway-iot-042 collectd[1123]: write-graphite plugin: Successfully connected to 192.168.1.77:2003.
+Jan 10 16:43:10 gateway-iot-042 systemd[1]: Starting Daily man-db regeneration...
+Jan 10 16:44:12 gateway-iot-042 kernel: spi_master spi0: will run message pump with realtime priority
+Jan 10 16:44:50 gateway-iot-042 can0[1247]: can0  received  ID=0x18FF50E5   DLC=8  00 00 00 00 FF FF 00 00
+Jan 10 16:45:00 gateway-iot-042 systemd[1]: Started Daily man-db regeneration.
+Jan 10 16:45:11 gateway-iot-042 mbpoll[1568]: [RTU] device 0x01  fc=0x03  addr=1024  cnt=8   → 0x0123 0x0456 0x0789 0x0ABC ...
+Jan 10 16:45:30 gateway-iot-042 kernel: pppol2tp: L2TP kernel support registered
+Jan 10 16:46:15 gateway-iot-042 collectd[1123]: cpu plugin: 23.4%, 18.1%, 17.9%, 19.2% (usr/sys/idle/wait)
+Jan 10 16:47:22 gateway-iot-042 kernel: imx-sdma 30ec0000.sdma: loaded firmware 3.5
+Jan 10 16:48:00 gateway-iot-042 systemd-journald[189]: Suppressed 428 messages from /usr/bin/mosquitto during last 10min
+Jan 10 16:48:40 gateway-iot-042 mosquitto[2012]: New connection from 192.168.42.203:42109 on port 1883.
+Jan 10 16:48:40 gateway-iot-042 mosquitto[2012]: New client connected from 192.168.42.203:42109 as scada-plc-05 (p2, c1, k60)
+Jan 10 16:49:05 gateway-iot-042 kernel: IPv6: ADDRCONF(NETDEV_CHANGE): wlan0: link becomes ready
+Jan 10 16:49:07 gateway-iot-042 wpa_supplicant[689]: wlan0: WPA: Group rekeying completed with 12:34:56:78:90:ab [GTK=CCMP]
+Jan 10 16:50:00 gateway-iot-042 systemd[1]: Starting Message of the Day MOTD...
+Jan 10 16:50:01 gateway-iot-042 systemd[1]: motd-news.service: Deactivated successfully.
+Jan 10 16:51:12 gateway-iot-042 kernel: sd 0:0:0:0: [sda]  31258176 512-byte logical blocks: (16.0 GB/14.9 GiB)
+Jan 10 16:52:30 gateway-iot-042 mbpoll[1568]: [RTU] Timeout after 1200ms - retrying (2/3)
+Jan 10 16:53:45 gateway-iot-042 collectd[1123]: write-graphite plugin: Connection to 192.168.1.77:2003 failed: Connection timed out
+Jan 10 16:53:47 gateway-iot-042 collectd[1123]: write-graphite plugin: Successfully re-connected to 192.168.1.77:2003.
+Jan 10 16:55:00 gateway-iot-042 systemd[1]: Starting Clean php session files...
+Jan 10 16:55:02 gateway-iot-042 systemd[1]: phpsessionclean.service: Deactivated successfully.
+Jan 10 16:56:10 gateway-iot-042 kernel: can0  0x12345678   [8]  01 02 03 04 05 06 07 08
+Jan 10 16:57:20 gateway-iot-042 ntpd[945]: 91.189.91.157 time correction -0.003412 s
+Jan 10 16:58:33 gateway-iot-042 mosquitto[2012]: Client scada-plc-05 disconnected: Protocol error (0x02)
+Jan 10 16:58:45 gateway-iot-042 mosquitto[2012]: New connection from 192.168.42.203:42112 on port 1883.
+Jan 10 16:58:45 gateway-iot-042 mosquitto[2012]: New client connected from 192.168.42.203:42112 as scada-plc-05 (p2, c1, k60)
+Jan 10 17:00:00 gateway-iot-042 systemd[1]: Starting Daily apt upgrade and clean activities.
+Jan 10 17:00:12 gateway-iot-042 systemd[1]: apt-daily-upgrade.service: Deactivated successfully.
+Jan 10 17:01:20 gateway-iot-042 kernel: thermal thermal_zone0: trip point 0 over 72.3C reached
+Jan 10 17:01:22 gateway-iot-042 kernel: cpu cpu0: cpu cooling device 0: cur_state=2
+Jan 10 17:02:55 gateway-iot-042 mbpoll[1568]: [RTU] device 0x02  fc=0x04  addr=40001  cnt=16  → success
+Jan 10 17:05:00 gateway-iot-042 systemd[1]: Starting Rotate log files...
+Jan 10 17:05:03 gateway-iot-042 logrotate[3891]: alert: /var/log/nginx/access.log does not need rotating
+Jan 10 17:07:40 gateway-iot-042 collectd[1123]: load plugin: 1m=0.92 5m=0.88 15m=0.85
+Jan 10 17:10:15 gateway-iot-042 kernel: can0  0x18FF50E5   [8]  00 00 00 00 FF FF 00 00
+Jan 10 17:12:30 gateway-iot-042 ntpd[945]: kernel reports TIME_ERROR: 0x4041: Clock Unsynchronized
+Jan 10 17:13:10 gateway-iot-042 ntpd[945]: 162.159.200.123 time correction +0.001892 s
+Jan 10 17:15:00 gateway-iot-042 systemd[1]: Starting Daily man-db regeneration...
+Jan 10 17:18:22 gateway-iot-042 mosquitto[2012]: Received PUBLISH from scada-plc-05 (d0, q1, r0, m1234, 'machine/status/alive', ... (32 bytes))
+Jan 10 17:20:45 gateway-iot-042 kernel: sd 0:0:0:0: [sda] Synchronizing SCSI cache
+Jan 10 17:21:10 gateway-iot-042 kernel: sd 0:0:0:0: [sda] Stopping disk
+Jan 10 17:21:12 gateway-iot-042 kernel: sd 0:0:0:0: [sda] Starting disk
+Jan 10 17:23:40 gateway-iot-042 collectd[1123]: memory plugin: 187 MiB used / 984 MiB total
+Jan 10 17:25:00 gateway-iot-042 systemd[1]: Started Daily man-db regeneration.
+Jan 10 17:27:55 gateway-iot-042 kernel: thermal thermal_zone0: Temperature 68.2C
+Jan 10 17:30:10 gateway-iot-042 mbpoll[1568]: [RTU] Timeout after 1200ms - retrying (3/3)
+Jan 10 17:30:13 gateway-iot-042 mbpoll[1568]: [RTU] device 0x01  fc=0x03  addr=1024  cnt=8   → success after 3 tries
+Jan 10 17:32:20 gateway-iot-042 mosquitto[2012]: Client scada-plc-05 disconnected: Connection lost (0x01)
+Jan 10 17:35:00 gateway-iot-042 systemd[1]: Starting Clean php session files...
+Jan 10 17:38:40 gateway-iot-042 collectd[1123]: write-graphite plugin: Successfully connected to 192.168.1.77:2003.
+Jan 10 17:40:15 gateway-iot-042 kernel: can0  0x7DF   [8]  02 01 05 00 00 00 00 00   (PID request)
+Jan 10 17:40:16 gateway-iot-042 kernel: can0  0x7E8   [8]  03 41 05 3C 00 00 00 00   (ECT 60°C)
+Jan 10 17:42:05 gateway-iot-042 systemd-journald[189]: Time jumped forward after RTC update (from 17:41:58 to 17:42:05), supressing messages for 7s
