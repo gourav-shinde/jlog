@@ -1,10 +1,10 @@
 mod cli;
-#[path = "analyzer/analyze.rs"]
-mod analyze;
-#[path = "parsers/journalctl.rs"]
+mod analyzer;
 mod journalctl;
-#[path = "monitor/monitor.rs"]
 mod monitor;
+mod report;
+mod server;
+
 mod helper {
     #[path = "../helper/BufferFileReader.rs"]
     mod buffer_file_reader;
@@ -13,19 +13,17 @@ mod helper {
 
 use cli::{Args, Commands};
 use clap::Parser;
-use analyze::analyze;
-use monitor::monitor;
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Commands::Analyze { path, unit, priority, top, pattern, .. } => {
+        Commands::Analyze { path, unit, priority, top, pattern, report, serve, port, .. } => {
             println!("jlog - Journalctl Log Analyzer\n");
-            analyze(path, unit, priority, top, pattern)?;
+            analyzer::analyze(path, unit, priority, top, pattern, report, serve, port)?;
         }
         Commands::Monitor { path, unit, priority, pattern } => {
-            monitor(path, unit, priority, pattern)?;
+            monitor::monitor(path, unit, priority, pattern)?;
         }
     }
 

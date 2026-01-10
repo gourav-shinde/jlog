@@ -49,4 +49,22 @@ impl JournalEntry {
     pub fn msg(&self) -> &str {
         self.message.as_deref().unwrap_or("")
     }
+
+    /// Get timestamp as Unix seconds (journalctl uses microseconds)
+    pub fn timestamp_secs(&self) -> Option<i64> {
+        self.realtime_timestamp
+            .as_ref()
+            .and_then(|ts| ts.parse::<i64>().ok())
+            .map(|us| us / 1_000_000)
+    }
+
+    /// Get hour bucket (YYYY-MM-DD HH:00) for time-series grouping
+    pub fn hour_bucket(&self) -> Option<String> {
+        self.timestamp_secs().map(|secs| {
+            let hour = (secs / 3600) * 3600;
+            chrono::DateTime::from_timestamp(hour, 0)
+                .map(|dt| dt.format("%Y-%m-%d %H:00").to_string())
+                .unwrap_or_else(|| format!("{}", hour))
+        })
+    }
 }

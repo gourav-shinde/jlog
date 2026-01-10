@@ -35,10 +35,18 @@ pub enum Commands {
         /// Pattern to search for (regex)
         #[arg(long)]
         pattern: Option<String>,
-        
-        /// Generate HTML report
+
+        /// Generate HTML report to file
         #[arg(long)]
         report: Option<String>,
+
+        /// Start live web server to view results
+        #[arg(long)]
+        serve: bool,
+
+        /// Port for live server (default: 8080)
+        #[arg(long, default_value = "8080")]
+        port: u16,
     },
     
     /// Monitor logs in real-time
