@@ -1,197 +1,243 @@
-Project: jlog - Advanced Journalctl Log Analyzer
-Core Features (MVP)
-Pattern Detection & Anomalies
+# jlog
 
-Detect repeated error patterns (e.g., "failed login attempt" occurring 50+ times)
-Identify unusual spikes in log volume per time window
-Flag services that restart frequently
+Advanced journalctl log analyzer with pattern detection and real-time monitoring.
 
-Statistical Analysis
+## Features
 
-Log volume by service, priority level, and time period
-Most common error messages with counts
-Service health summary (uptime, crash count, errors/warnings ratio)
+- **Streaming Analysis** - Process large log files (1GB+) with minimal memory usage
+- **Pattern Detection** - Automatically detect SSH brute force, OOM events, disk issues, timeouts
+- **Real-time Monitoring** - Tail logs and see events as they happen
+- **Smart Filtering** - Filter by service, priority level, or regex patterns
+- **Color-coded Output** - Visual priority indicators and bar charts
 
-Smart Filtering & Querying
+## Installation
 
-Parse journalctl JSON output efficiently
-Filter by custom time ranges, regex patterns, priority levels
-Chain multiple filters (service + priority + time range)
-
-Visualization in Terminal
-
-ASCII charts showing log volume over time
-Color-coded output (errors in red, warnings in yellow)
-Summary dashboard view
-
-Advanced Features (Make It Stand Out)
-Real-time Monitoring Mode
-
-Tail logs with live analysis
-Alert on specific patterns (configurable rules)
-Keep running statistics
-
-Export & Reporting
-
-Generate HTML reports with charts
-Export to JSON/CSV for further analysis
-Create summaries suitable for incident reports
-
-Machine Learning Lite
-
-Learn "normal" baseline patterns
-Flag deviations from baseline (unsupervised anomaly detection)
-Cluster similar error messages
-
-
-## RoadMap
-
-Implementation Roadmap
-Phase 1: Core Functionality (Week 1)
-
-Parse journalctl JSON output ✓ (shown above)
-Basic statistics and filtering ✓
-Colorized terminal output with colored crate
-Error pattern detection with regex
-
-Phase 2: Advanced Analysis (Week 2)
-
-Time-series bucketing (logs per hour/minute)
-Anomaly detection (baseline vs. current)
-Service health scoring algorithm
-Export to JSON/CSV
-
-Phase 3: Visualization (Week 3)
-
-ASCII charts using tui crate for sparklines
-Interactive TUI mode with scrolling and filtering
-Real-time tail mode with live updates
-HTML report generation with embedded charts
-
-Phase 4: Polish (Week 4)
-
-Comprehensive tests
-CI/CD with GitHub Actions
-Performance optimization (streaming large logs)
-Documentation and examples
-
-Key Technical Challenges You'll Learn
-
-Spawning & parsing subprocesses - calling journalctl and handling output
-Streaming JSON parsing - not loading everything into memory
-Pattern matching & regex - extracting meaningful patterns from chaos
-Terminal UI - building interactive experiences in the terminal
-Statistical analysis - computing percentiles, detecting outliers
-Performance - handling millions of log lines efficiently
-
-Stand-Out Features to Add
-"Explain this error" - Use a simple heuristic or even integrate with an LLM API to explain what common systemd errors mean
-Correlation detection - "Service X fails 30 seconds after Service Y restarts"
-Configuration file - Let users define custom alert rules (YAML/TOML)
-Plugin system - Let users write custom analyzers in Rust
-Want me to help you implement any specific part? I can show you how to:
-
-Build the TUI with charts
-Implement anomaly detection algorithms
-Create the HTML report generator
-Set up proper error handling throughout
-
-
-## Ideas
-
-Option 1: "htop for journalctl" (Interactive TUI)
-A replacement/enhancement for the journalctl command itself. Users run jlog instead of journalctl and get:
-
-Real-time interactive interface
-Live filtering and searching
-Visual statistics overlays
-Stays running, updates in real-time
-
-User experience:
-bash$ jlog  # launches interactive TUI
-# Shows live scrolling logs with stats panel on the side
-# Press 'f' to filter, 's' to sort, '/' to search
-# Like htop, it's a system monitor you keep running
-Pros:
-
-More intuitive for daily use
-Great for sysadmins who live in terminals
-Immediate visual feedback
-
-Cons:
-
-Tied to systemd/journalctl (Linux-only)
-Less flexible for batch analysis
-
-Option 2: Standalone Analysis Tool (Batch Processor)
-A third-party tool that ingests logs and produces analysis. Works with any log format, not just journalctl:
-bash$ jlog analyze /var/log/syslog
-$ jlog analyze --format journalctl --since "2 hours ago"
-$ jlog analyze --input production-logs.json --output report.html
-User experience:
-
-Point it at log files (journalctl, syslog, Apache, custom formats)
-Generates reports, statistics, alerts
-Can be scripted and automated
-Works on any system (not tied to systemd)
-
-Pros:
-
-More portable and flexible
-Works with archived logs, not just live system
-Can analyze logs from multiple sources/machines
-Better for CI/CD integration and automation
-
-Cons:
-
-Less immediate/interactive
-Requires exporting logs first
-
-My Recommendation: Hybrid Approach
-Build Option 2 (standalone tool) with an optional TUI mode. This gives you the best of both worlds:
-bash# Batch analysis (default)
-$ jlog analyze --since "24 hours ago"
-$ jlog analyze /path/to/exported-logs.json
-
-# Interactive mode
-```
-$ jlog monitor  # launches TUI, like htop
-$ jlog tail -u nginx.service  # enhanced tail with live stats
+```bash
+cargo build --release
 ```
 
-# Generate reports
-```
-$ jlog report --format html --output incident-report.html
+The binary will be at `target/release/jlog`.
+
+## Usage
+
+### Analyze Historical Logs
+
+Analyze a journalctl JSON export:
+
+```bash
+# Export logs from journalctl
+journalctl -o json > /tmp/logs.json
+
+# Analyze with jlog
+jlog analyze --path /tmp/logs.json
 ```
 
-This approach:
-- **Starts simple** - batch processing is easier to build first
-- **Scales up** - add TUI later as a separate mode
-- **More portfolio-worthy** - shows you can design flexible architectures
-- **Actually useful** - works for both interactive debugging and automated analysis
+#### Options
 
-## Architecture for Hybrid Approach
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--path` | `-p` | Path to JSON log file | Required |
+| `--priority` | `-P` | Max priority level (0=emerg to 7=debug) | `3` (errors) |
+| `--unit` | `-u` | Filter by systemd unit/service name | None |
+| `--top` | `-n` | Show top N errors/services | `10` |
+| `--pattern` | | Regex pattern to filter messages | None |
+
+#### Examples
+
+```bash
+# Show all log levels (including info/debug)
+jlog analyze --path logs.json --priority 7
+
+# Filter by service
+jlog analyze --path logs.json --unit nginx --priority 7
+
+# Filter by regex pattern
+jlog analyze --path logs.json --pattern "Failed password"
+
+# Show top 20 errors
+jlog analyze --path logs.json --top 20
+
+# Combine filters
+jlog analyze --path logs.json --unit sshd --priority 4 --pattern "invalid user"
+```
+
+#### Sample Output
 
 ```
-jlog/
-├── src/
-│   ├── main.rs           # CLI entry point
-│   ├── parsers/          # Different log format parsers
-│   │   ├── journalctl.rs
-│   │   ├── syslog.rs
-│   │   └── generic.rs
-│   ├── analyzer/         # Core analysis logic
-│   │   ├── stats.rs
-│   │   ├── patterns.rs
-│   │   └── anomalies.rs
-│   ├── ui/               # Different output modes
-│   │   ├── tui.rs       # Interactive terminal UI
-│   │   ├── text.rs      # Plain text output
-│   │   └── html.rs      # HTML reports
-│   └── config.rs         # User configuration
+jlog - Journalctl Log Analyzer
+
+Analyzing: ./logs.json
+────────────────────────────────────────────────────────────
+
+SUMMARY
+  Lines read:             150000
+  Entries matched:        47532
+  Critical/Alert/Emerg:   12
+  Errors:                 856
+  Warnings:               4521
+
+PRIORITY DISTRIBUTION
+  CRIT    ██ 12
+  ERR     ████████ 856
+  WARNING ███████████████████████ 4521
+  INFO    ██████████████████████████████ 42143
+
+TOP SERVICES
+  nginx           ██████████████████████████████ 15234
+  sshd            █████████████████████████ 12453
+  systemd         ████████████ 8234
+
+TOP ERROR MESSAGES
+  1. [523x] Failed password for invalid user admin from <IP> port <PORT> ssh2
+  2. [89x] upstream timed out (110: Connection timed out)
+  3. [45x] Connection refused
+
+⚠ PATTERNS DETECTED
+  🔴 SSH Brute Force Attempt: 523 failed password attempts
+  🔴 Out of Memory: 3 OOM killer events
+  🟡 Connection Timeouts: 89 timeout events
 ```
-Which Should You Build?
-If you want maximum GitHub impact: Go with the hybrid approach, start with batch processing.
-If you want to ship something quickly: Pure batch processor (Option 2).
-If you love terminal UIs: Go full htop-style (Option 1), but accept it's Linux-only.
-What appeals more to you? The interactive systems monitoring vibe, or the flexible log analysis tool? I can help you architect whichever direction you choose.
+
+### Real-time Monitoring
+
+Monitor logs as they happen:
+
+```bash
+# Monitor from stdin (pipe from journalctl)
+journalctl -f -o json | jlog monitor
+
+# Monitor a file (tail -f style)
+jlog monitor --path /var/log/journal.json
+
+# Filter real-time logs
+journalctl -f -o json | jlog monitor --unit nginx --priority 4
+```
+
+#### Options
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--path` | `-p` | Path to log file (tails for new entries) | stdin |
+| `--priority` | `-P` | Max priority level (0=emerg to 7=debug) | `3` |
+| `--unit` | `-u` | Filter by systemd unit/service name | None |
+| `--pattern` | | Regex pattern to filter messages | None |
+
+#### Examples
+
+```bash
+# Monitor all errors from any service
+journalctl -f -o json | jlog monitor
+
+# Monitor specific service with warnings
+journalctl -f -o json -u nginx | jlog monitor --priority 4
+
+# Watch for specific patterns
+journalctl -f -o json | jlog monitor --pattern "connection refused"
+
+# Tail a log file
+jlog monitor --path /tmp/logs.json
+```
+
+#### Sample Output
+
+```
+────────────────────────────────────────────────────────────────────────────────
+jlog - Real-time Log Monitor
+────────────────────────────────────────────────────────────────────────────────
+Reading from: stdin
+Pipe journalctl output: journalctl -f -o json | jlog monitor
+────────────────────────────────────────────────────────────────────────────────
+
+ERR     nginx           upstream timed out (110: Connection timed out)
+  ⚠ Error from nginx
+WARN    sshd            Failed password for invalid user admin from 192.168.1.100
+  ⚠ SSH auth failure detected
+ERR     postgresql      connection limit exceeded for non-superusers
+  ⚠ Error from postgresql
+```
+
+## Priority Levels
+
+| Level | Name | Description |
+|-------|------|-------------|
+| 0 | EMERG | System is unusable |
+| 1 | ALERT | Action must be taken immediately |
+| 2 | CRIT | Critical conditions |
+| 3 | ERR | Error conditions (default filter) |
+| 4 | WARNING | Warning conditions |
+| 5 | NOTICE | Normal but significant |
+| 6 | INFO | Informational |
+| 7 | DEBUG | Debug-level messages |
+
+## Pattern Detection
+
+jlog automatically detects these patterns:
+
+| Pattern | Severity | Trigger |
+|---------|----------|---------|
+| SSH Brute Force | 🔴 Critical (10+) / 🟡 Warning (3+) | "Failed password" messages |
+| Out of Memory | 🔴 Critical | OOM killer events |
+| Service Restarts | 🟡 Warning | Restart events (2+) |
+| Connection Timeouts | 🟡 Warning | Timeout messages (2+) |
+| Disk Issues | 🟡 Warning | Disk errors or >90% usage |
+| Firewall Blocks | 🔵 Info | UFW BLOCK messages (2+) |
+
+## Performance
+
+- **Streaming architecture** - Processes entries one at a time
+- **Memory efficient** - Uses ~5-10MB regardless of file size
+- **128KB I/O buffer** - Optimized for large sequential reads
+- **Progress indicator** - Shows progress for files >10MB
+
+## Input Format
+
+jlog expects journalctl JSON output (one JSON object per line):
+
+```bash
+# Generate compatible input
+journalctl -o json > logs.json
+journalctl -o json --since "1 hour ago" > recent.json
+journalctl -o json -u nginx -u postgresql > services.json
+```
+
+## Roadmap
+
+### Planned Features
+
+**Advanced Analysis**
+- Time-series bucketing (logs per hour/minute)
+- Anomaly detection (baseline vs. current behavior)
+- Service health scoring algorithm
+- Correlation detection ("Service X fails 30 seconds after Service Y restarts")
+
+**Export & Reporting**
+- Generate HTML reports with embedded charts
+- Export to JSON/CSV for further analysis
+- Create summaries suitable for incident reports
+
+**Interactive TUI Mode**
+- Full-screen terminal UI (like htop)
+- Live filtering and searching
+- Visual statistics overlays
+- Scrollable log viewer
+
+**Extended Format Support**
+- Syslog parsing
+- Apache/Nginx access logs
+- Custom log format definitions
+
+**Configuration**
+- User-defined alert rules (YAML/TOML)
+- Custom pattern definitions
+- Saved filter presets
+
+### Ideas
+
+- **"Explain this error"** - Integrate with LLM API to explain common systemd errors
+- **Machine learning lite** - Learn "normal" baseline patterns, flag deviations
+- **Cluster similar errors** - Group related error messages automatically
+- **Plugin system** - Let users write custom analyzers
+
+## License
+
+MIT
