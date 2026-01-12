@@ -1,4 +1,11 @@
 use serde::Deserialize;
+use regex::Regex;
+use once_cell::sync::Lazy;
+
+/// Regex for parsing syslog format: "Mon DD HH:MM:SS hostname service[pid]: message"
+static SYSLOG_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^([A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+([^\[:]+)(?:\[(\d+)\])?:\s*(.*)$").unwrap()
+});
 
 /// Represents a single journal entry from journalctl JSON output
 #[derive(Debug, Deserialize, Clone)]
@@ -67,4 +74,85 @@ impl JournalEntry {
                 .unwrap_or_else(|| format!("{}", hour))
         })
     }
+
+    /// Parse a syslog/text format line into a JournalEntry
+    /// Format: "Mon DD HH:MM:SS hostname service[pid]: message"
+    pub fn from_syslog_line(line: &str) -> Option<Self> {
+        let caps = SYSLOG_REGEX.captures(line)?;
+
+        let timestamp_str = caps.get(1)?.as_str();
+        let hostname = caps.get(2).map(|m| m.as_str().to_string());
+        let service = caps.get(3).map(|m| m.as_str().trim().to_string());
+        let pid = caps.get(4).map(|m| m.as_str().to_string());
+        let message = caps.get(5).map(|m| m.as_str().to_string());
+
+        // Parse timestamp - assume current year since syslog doesn't include it
+        let timestamp = parse_syslog_timestamp(timestamp_str);
+
+        // Infer priority from message content
+        let priority = infer_priority(message.as_deref().unwrap_or(""));
+
+        Some(JournalEntry {
+            realtime_timestamp: timestamp.map(|t| (t * 1_000_000).to_string()),
+            hostname,
+            priority: Some(priority.to_string()),
+            syslog_identifier: service,
+            pid,
+            systemd_unit: None,
+            message,
+            transport: None,
+        })
+    }
+}
+
+/// Parse syslog timestamp (e.g., "Jan 10 16:42:10") to Unix seconds
+fn parse_syslog_timestamp(ts: &str) -> Option<i64> {
+    let now = chrono::Local::now();
+    let year = now.format("%Y").to_string();
+    let full_ts = format!("{} {}", year, ts);
+
+    chrono::NaiveDateTime::parse_from_str(&full_ts, "%Y %b %d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_local_timezone(chrono::Local).single())
+        .flatten()
+        .map(|dt| dt.timestamp())
+}
+
+/// Infer syslog priority from message content
+/// Returns: 0=emerg, 1=alert, 2=crit, 3=err, 4=warning, 5=notice, 6=info, 7=debug
+fn infer_priority(msg: &str) -> u8 {
+    let msg_lower = msg.to_lowercase();
+
+    // Critical patterns (priority 2)
+    if msg_lower.contains("panic") || msg_lower.contains("fatal") || msg_lower.contains("critical") {
+        return 2;
+    }
+
+    // Error patterns (priority 3)
+    if msg_lower.contains("error") || msg_lower.contains("failed") || msg_lower.contains("failure")
+        || msg_lower.contains("cannot") || msg_lower.contains("unable to")
+        || msg_lower.contains("segfault") || msg_lower.contains("exception")
+    {
+        return 3;
+    }
+
+    // Warning patterns (priority 4)
+    if msg_lower.contains("warning") || msg_lower.contains("warn")
+        || msg_lower.contains("timeout") || msg_lower.contains("timed out")
+        || msg_lower.contains("retrying") || msg_lower.contains("deprecated")
+        || msg_lower.contains("denied") || msg_lower.contains("refused")
+    {
+        return 4;
+    }
+
+    // Notice patterns (priority 5)
+    if msg_lower.contains("started") || msg_lower.contains("stopped")
+        || msg_lower.contains("connected") || msg_lower.contains("disconnected")
+        || msg_lower.contains("loaded") || msg_lower.contains("finished")
+    {
+        return 5;
+    }
+
+    // Default to info (priority 6)
+    6
 }

@@ -111,15 +111,23 @@ pub fn analyze(
 }
 
 fn parse_line(line: &str, parse_errors: &mut usize) -> Option<JournalEntry> {
-    if line.trim().is_empty() {
+    let line = line.trim();
+    if line.is_empty() {
         return None;
     }
 
-    match serde_json::from_str::<JournalEntry>(line) {
-        Ok(entry) => Some(entry),
-        Err(_) => {
-            *parse_errors += 1;
-            None
+    // Try text/syslog format first (most common for log files)
+    if let Some(entry) = JournalEntry::from_syslog_line(line) {
+        return Some(entry);
+    }
+
+    // Fall back to JSON format (journalctl -o json)
+    if line.starts_with('{') {
+        if let Ok(entry) = serde_json::from_str::<JournalEntry>(line) {
+            return Some(entry);
         }
     }
+
+    *parse_errors += 1;
+    None
 }

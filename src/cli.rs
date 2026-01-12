@@ -19,13 +19,13 @@ pub enum Commands {
         /// Analyze logs from the last N hours
         #[arg(short = 'H', long)]
         hours: Option<u32>,
-        
+
         /// Filter by systemd unit/service
         #[arg(short = 'u', long)]
         unit: Option<String>,
-        
-        /// Minimum priority (0=emerg, 7=debug)
-        #[arg(short = 'P', long, default_value = "3")]
+
+        /// Maximum priority level to show (0=emerg, 3=err, 4=warn, 6=info, 7=debug)
+        #[arg(short = 'P', long, default_value = "6")]
         priority: u8,
         
         /// Show top N most common errors
@@ -54,13 +54,13 @@ pub enum Commands {
         /// Path to log file
         #[arg(short, long)]
         path: Option<String>,
-        
+
         /// Filter by systemd unit/service
         #[arg(short = 'u', long)]
         unit: Option<String>,
-        
-        /// Minimum priority (0=emerg, 7=debug)
-        #[arg(short = 'P', long, default_value = "3")]
+
+        /// Maximum priority level to show (0=emerg, 3=err, 4=warn, 6=info, 7=debug)
+        #[arg(short = 'P', long, default_value = "6")]
         priority: u8,
         
         /// Pattern to search for (regex)
