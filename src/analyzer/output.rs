@@ -135,14 +135,30 @@ pub fn print_patterns(state: &AnalysisState) {
         return;
     }
 
-    println!("\n{}", "⚠ PATTERNS DETECTED".bold().underline().yellow());
+    println!("\n{}", "⚠ DYNAMIC PATTERNS DETECTED".bold().underline().yellow());
 
     for p in patterns {
-        let (icon, colored_name) = match p.severity {
-            Severity::Critical => ("🔴", p.name.red().bold()),
-            Severity::Warning => ("🟡", p.name.yellow()),
-            Severity::Info => ("🔵", p.name.blue()),
+        let severity_icon = match p.severity {
+            Severity::Critical => "🔴",
+            Severity::Warning => "🟡",
+            Severity::Info => "🔵",
         };
-        println!("  {} {}: {}", icon, colored_name, p.description);
+
+        let type_label = format!("[{}]", p.pattern_type.label());
+        let colored_type = match p.severity {
+            Severity::Critical => type_label.red().bold(),
+            Severity::Warning => type_label.yellow(),
+            Severity::Info => type_label.blue(),
+        };
+
+        // Truncate message for display
+        let msg_display = if p.message.len() > 50 {
+            format!("{}...", &p.message[..47])
+        } else {
+            p.message.clone()
+        };
+
+        println!("  {} {} {}", severity_icon, colored_type, p.description);
+        println!("      {}", msg_display.dimmed());
     }
 }

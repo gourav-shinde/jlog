@@ -29,13 +29,20 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
 
     let patterns = state.get_patterns();
     let pattern_cards: String = patterns.iter().map(|p| {
-        let (class, icon) = match p.severity {
-            Severity::Critical => ("critical", "🔴"),
-            Severity::Warning => ("warning", "🟡"),
-            Severity::Info => ("info", "🔵"),
+        let class = match p.severity {
+            Severity::Critical => "critical",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
         };
-        format!(r#"<div class="pattern-card {}"><span class="icon">{}</span><strong>{}</strong><p>{}</p></div>"#,
-            class, icon, p.name, p.description)
+        let escaped_msg = p.message.replace('<', "&lt;").replace('>', "&gt;");
+        format!(
+            r#"<div class="pattern-card {}">
+                <div class="pattern-header"><span class="icon">{}</span><span class="pattern-type">{}</span></div>
+                <p class="pattern-desc">{}</p>
+                <p class="pattern-msg">{}</p>
+            </div>"#,
+            class, p.pattern_type.icon(), p.pattern_type.label(), p.description, escaped_msg
+        )
     }).collect::<Vec<_>>().join("\n");
 
     // Build raw minute-level data as JSON for client-side aggregation
@@ -110,14 +117,18 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
         .charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }}
         .chart-container {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }}
         .chart-container.full-width {{ grid-column: 1 / -1; }}
-        .patterns {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 30px; }}
-        .pattern-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; flex: 1; min-width: 200px; }}
-        .pattern-card.critical {{ border-color: #f85149; }}
-        .pattern-card.warning {{ border-color: #d29922; }}
+        .patterns {{ display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 30px; }}
+        .pattern-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; flex: 1; min-width: 280px; max-width: 450px; }}
+        .pattern-card.critical {{ border-color: #f85149; background: #1a1215; }}
+        .pattern-card.warning {{ border-color: #d29922; background: #1a1815; }}
         .pattern-card.info {{ border-color: #58a6ff; }}
-        .pattern-card .icon {{ font-size: 1.5em; margin-right: 10px; }}
-        .pattern-card strong {{ color: #c9d1d9; }}
-        .pattern-card p {{ color: #8b949e; margin-top: 5px; font-size: 0.9em; }}
+        .pattern-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }}
+        .pattern-header .icon {{ font-size: 1.3em; }}
+        .pattern-type {{ font-weight: 600; color: #c9d1d9; font-size: 0.95em; }}
+        .pattern-card.critical .pattern-type {{ color: #f85149; }}
+        .pattern-card.warning .pattern-type {{ color: #d29922; }}
+        .pattern-desc {{ color: #8b949e; font-size: 0.9em; margin: 5px 0; }}
+        .pattern-msg {{ color: #6e7681; font-size: 0.8em; margin-top: 8px; padding: 8px; background: #0d1117; border-radius: 4px; word-break: break-all; font-family: monospace; }}
         table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }}
         th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #30363d; }}
         th {{ background: #21262d; color: #8b949e; font-weight: 600; }}

@@ -22,14 +22,6 @@ pub struct AnalysisState {
 
     // Message trends over time: message -> (minute_bucket -> count)
     pub message_trends: HashMap<String, HashMap<String, usize>>,
-
-    // Pattern counters
-    pub failed_ssh_count: usize,
-    pub restart_count: usize,
-    pub oom_count: usize,
-    pub timeout_count: usize,
-    pub disk_issue_count: usize,
-    pub firewall_block_count: usize,
 }
 
 impl AnalysisState {
@@ -41,12 +33,6 @@ impl AnalysisState {
             error_messages: HashMap::new(),
             time_series: HashMap::new(),
             message_trends: HashMap::new(),
-            failed_ssh_count: 0,
-            restart_count: 0,
-            oom_count: 0,
-            timeout_count: 0,
-            disk_issue_count: 0,
-            firewall_block_count: 0,
         }
     }
 
@@ -85,33 +71,6 @@ impl AnalysisState {
                     *msg_buckets.entry(bucket_key).or_insert(0) += 1;
                 }
             }
-        }
-
-        // Detect patterns inline
-        self.detect_patterns(entry);
-    }
-
-    fn detect_patterns(&mut self, entry: &JournalEntry) {
-        let msg = entry.msg();
-        let msg_lower = msg.to_lowercase();
-
-        if msg.contains("Failed password") {
-            self.failed_ssh_count += 1;
-        }
-        if msg.contains("restart") || msg.contains("Restarting") {
-            self.restart_count += 1;
-        }
-        if msg.contains("Out of memory") || msg.contains("OOM") {
-            self.oom_count += 1;
-        }
-        if msg_lower.contains("timeout") {
-            self.timeout_count += 1;
-        }
-        if msg_lower.contains("disk") && (msg_lower.contains("error") || msg_lower.contains("full") || msg_lower.contains("90%")) {
-            self.disk_issue_count += 1;
-        }
-        if msg.contains("UFW BLOCK") || msg.contains("BLOCKED") {
-            self.firewall_block_count += 1;
         }
     }
 
@@ -162,67 +121,152 @@ impl AnalysisState {
         }).collect()
     }
 
-    /// Get all unique time buckets sorted
-    pub fn all_time_buckets(&self) -> Vec<String> {
-        let mut buckets: Vec<_> = self.time_series.keys().cloned().collect();
-        buckets.sort();
-        buckets
-    }
-
-    /// Get detected patterns for reporting
+    /// Dynamically detect patterns by analyzing message frequency and distribution
     pub fn get_patterns(&self) -> Vec<PatternInfo> {
         let mut patterns = Vec::new();
+        let all_buckets = self.sorted_time_series();
+        let num_buckets = all_buckets.len();
 
-        if self.failed_ssh_count >= 3 {
-            patterns.push(PatternInfo {
-                name: "SSH Brute Force Attempt",
-                description: format!("{} failed password attempts", self.failed_ssh_count),
-                severity: if self.failed_ssh_count >= 10 { Severity::Critical } else { Severity::Warning },
-                count: self.failed_ssh_count,
-            });
-        }
-        if self.oom_count > 0 {
-            patterns.push(PatternInfo {
-                name: "Out of Memory",
-                description: format!("{} OOM killer events", self.oom_count),
-                severity: Severity::Critical,
-                count: self.oom_count,
-            });
-        }
-        if self.restart_count >= 2 {
-            patterns.push(PatternInfo {
-                name: "Service Restarts",
-                description: format!("{} restart events", self.restart_count),
-                severity: Severity::Warning,
-                count: self.restart_count,
-            });
-        }
-        if self.timeout_count >= 2 {
-            patterns.push(PatternInfo {
-                name: "Connection Timeouts",
-                description: format!("{} timeout events", self.timeout_count),
-                severity: Severity::Warning,
-                count: self.timeout_count,
-            });
-        }
-        if self.disk_issue_count > 0 {
-            patterns.push(PatternInfo {
-                name: "Disk Issues",
-                description: format!("{} disk-related issues", self.disk_issue_count),
-                severity: Severity::Warning,
-                count: self.disk_issue_count,
-            });
-        }
-        if self.firewall_block_count >= 2 {
-            patterns.push(PatternInfo {
-                name: "Firewall Blocks",
-                description: format!("{} blocked connections", self.firewall_block_count),
-                severity: Severity::Info,
-                count: self.firewall_block_count,
-            });
+        if num_buckets == 0 {
+            return patterns;
         }
 
+        // Analyze each error message for patterns
+        for (msg, total_count) in self.error_messages.iter() {
+            if let Some(buckets) = self.message_trends.get(msg) {
+                let bucket_counts: Vec<usize> = buckets.values().cloned().collect();
+                let num_active_buckets = bucket_counts.len();
+
+                if num_active_buckets == 0 {
+                    continue;
+                }
+
+                // Calculate statistics
+                let avg = *total_count as f64 / num_buckets as f64;
+                let max_in_bucket = bucket_counts.iter().max().cloned().unwrap_or(0);
+
+                // Detect SPIKE: max bucket value is significantly higher than average
+                // A spike means the message occurred much more frequently in one time period
+                if num_active_buckets >= 2 && max_in_bucket as f64 > avg * 3.0 && max_in_bucket >= 3 {
+                    let spike_bucket = buckets.iter()
+                        .max_by_key(|(_, c)| *c)
+                        .map(|(t, _)| t.clone())
+                        .unwrap_or_default();
+
+                    patterns.push(PatternInfo {
+                        pattern_type: PatternType::Spike,
+                        message: truncate_msg(msg, 80),
+                        description: format!("Spike of {} at {}, avg {:.1}/bucket", max_in_bucket, spike_bucket, avg),
+                        severity: if max_in_bucket >= 50 { Severity::Critical } else { Severity::Warning },
+                        count: *total_count,
+                        details: Some(format!("Peak: {} occurrences in single minute", max_in_bucket)),
+                    });
+                }
+
+                // Detect BURST: many occurrences concentrated in very few buckets
+                // High concentration means the message appeared in bursts rather than spread out
+                let concentration = num_active_buckets as f64 / num_buckets as f64;
+                if *total_count >= 5 && concentration < 0.3 && num_active_buckets <= 5 {
+                    patterns.push(PatternInfo {
+                        pattern_type: PatternType::Burst,
+                        message: truncate_msg(msg, 80),
+                        description: format!("{} occurrences in only {} time windows", total_count, num_active_buckets),
+                        severity: Severity::Warning,
+                        count: *total_count,
+                        details: Some(format!("Concentrated burst - {}% of time range", (concentration * 100.0) as usize)),
+                    });
+                }
+
+                // Detect RECURRING: message appears consistently across many buckets
+                // This indicates a persistent issue that keeps happening
+                if *total_count >= 5 && concentration > 0.4 && num_active_buckets >= 3 {
+                    patterns.push(PatternInfo {
+                        pattern_type: PatternType::Recurring,
+                        message: truncate_msg(msg, 80),
+                        description: format!("Recurring {} times across {}% of time range", total_count, (concentration * 100.0) as usize),
+                        severity: Severity::Warning,
+                        count: *total_count,
+                        details: Some(format!("Persistent issue - appears in {} buckets", num_active_buckets)),
+                    });
+                }
+
+                // Detect INCREASING: rate is higher in second half than first half
+                // This indicates a growing problem
+                if num_active_buckets >= 4 {
+                    let sorted_buckets: Vec<_> = {
+                        let mut v: Vec<_> = buckets.iter().collect();
+                        v.sort_by(|a, b| a.0.cmp(b.0));
+                        v
+                    };
+                    let mid = sorted_buckets.len() / 2;
+                    let first_half: usize = sorted_buckets[..mid].iter().map(|(_, c)| *c).sum();
+                    let second_half: usize = sorted_buckets[mid..].iter().map(|(_, c)| *c).sum();
+
+                    if second_half > first_half * 2 && second_half >= 5 {
+                        patterns.push(PatternInfo {
+                            pattern_type: PatternType::Increasing,
+                            message: truncate_msg(msg, 80),
+                            description: format!("Rate increased from {} to {} ({}x)", first_half, second_half, second_half / first_half.max(1)),
+                            severity: Severity::Warning,
+                            count: *total_count,
+                            details: Some("Frequency increasing over time".to_string()),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Detect HIGH VOLUME: messages that dominate the error log
+        let total_errors: usize = self.error_messages.values().sum();
+        if total_errors > 0 {
+            for (msg, count) in self.error_messages.iter() {
+                let percentage = (*count as f64 / total_errors as f64) * 100.0;
+                if percentage > 25.0 && *count >= 5 {
+                    // Check if already added as another pattern type
+                    let already_added = patterns.iter().any(|p| p.message == truncate_msg(msg, 80));
+                    if !already_added {
+                        patterns.push(PatternInfo {
+                            pattern_type: PatternType::HighVolume,
+                            message: truncate_msg(msg, 80),
+                            description: format!("{:.1}% of all errors ({} occurrences)", percentage, count),
+                            severity: if percentage > 50.0 { Severity::Critical } else { Severity::Warning },
+                            count: *count,
+                            details: Some(format!("Dominates error log with {:.1}% share", percentage)),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort patterns by severity and count
+        patterns.sort_by(|a, b| {
+            let sev_ord = severity_order(a.severity).cmp(&severity_order(b.severity));
+            if sev_ord != std::cmp::Ordering::Equal {
+                sev_ord
+            } else {
+                b.count.cmp(&a.count)
+            }
+        });
+
+        // Limit to top 10 patterns
+        patterns.truncate(10);
         patterns
+    }
+}
+
+fn truncate_msg(msg: &str, max_len: usize) -> String {
+    if msg.len() <= max_len {
+        msg.to_string()
+    } else {
+        format!("{}...", &msg[..max_len])
+    }
+}
+
+fn severity_order(s: Severity) -> usize {
+    match s {
+        Severity::Critical => 0,
+        Severity::Warning => 1,
+        Severity::Info => 2,
     }
 }
 
@@ -233,9 +277,42 @@ pub enum Severity {
     Info,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum PatternType {
+    Spike,      // Sudden increase in frequency
+    Burst,      // Concentrated occurrences in short time
+    Recurring,  // Consistent appearance over time
+    Increasing, // Rate growing over time
+    HighVolume, // Dominates the error log
+}
+
+impl PatternType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PatternType::Spike => "Spike",
+            PatternType::Burst => "Burst",
+            PatternType::Recurring => "Recurring",
+            PatternType::Increasing => "Increasing",
+            PatternType::HighVolume => "High Volume",
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            PatternType::Spike => "📈",
+            PatternType::Burst => "💥",
+            PatternType::Recurring => "🔄",
+            PatternType::Increasing => "📊",
+            PatternType::HighVolume => "🔥",
+        }
+    }
+}
+
 pub struct PatternInfo {
-    pub name: &'static str,
+    pub pattern_type: PatternType,
+    pub message: String,
     pub description: String,
     pub severity: Severity,
     pub count: usize,
+    pub details: Option<String>,
 }

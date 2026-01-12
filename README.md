@@ -5,11 +5,13 @@ Advanced journalctl log analyzer with pattern detection and real-time monitoring
 ## Features
 
 - **Streaming Analysis** - Process large log files (1GB+) with minimal memory usage
-- **Pattern Detection** - Automatically detect SSH brute force, OOM events, disk issues, timeouts
+- **Dynamic Pattern Detection** - Automatically detect spikes, bursts, recurring issues, and anomalies
+- **Multiple Log Formats** - Supports plain text syslog, journalctl short-precise, and JSON formats
 - **Real-time Monitoring** - Tail logs and see events as they happen
 - **Smart Filtering** - Filter by service, priority level, or regex patterns
 - **Color-coded Output** - Visual priority indicators and bar charts
 - **HTML Reports** - Generate interactive reports with Chart.js visualizations
+- **Configurable Time Buckets** - Adjust time-series granularity (1min to 1hr) in web UI
 - **Live Web Server** - View analysis results in your browser with auto-refresh
 
 ## Installation
@@ -24,13 +26,18 @@ The binary will be at `target/release/jlog`.
 
 ### Analyze Historical Logs
 
-Analyze a journalctl JSON export:
+Analyze any log file (plain text syslog or JSON format):
 
 ```bash
-# Export logs from journalctl
-journalctl -o json > /tmp/logs.json
+# Analyze plain text syslog/journalctl output
+jlog analyze --path /var/log/syslog
 
-# Analyze with jlog
+# Analyze journalctl short-precise format
+journalctl -o short-precise > /tmp/logs.txt
+jlog analyze --path /tmp/logs.txt
+
+# Analyze JSON export
+journalctl -o json > /tmp/logs.json
 jlog analyze --path /tmp/logs.json
 ```
 
@@ -38,8 +45,8 @@ jlog analyze --path /tmp/logs.json
 
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
-| `--path` | `-p` | Path to JSON log file | Required |
-| `--priority` | `-P` | Max priority level (0=emerg to 7=debug) | `3` (errors) |
+| `--path` | `-p` | Path to log file (text or JSON) | Required |
+| `--priority` | `-P` | Max priority level (0=emerg to 7=debug) | `6` (info) |
 | `--unit` | `-u` | Filter by systemd unit/service name | None |
 | `--top` | `-n` | Show top N errors/services | `10` |
 | `--pattern` | | Regex pattern to filter messages | None |
@@ -109,10 +116,13 @@ TOP ERROR MESSAGES
   2. [89x] upstream timed out (110: Connection timed out)
   3. [45x] Connection refused
 
-⚠ PATTERNS DETECTED
-  🔴 SSH Brute Force Attempt: 523 failed password attempts
-  🔴 Out of Memory: 3 OOM killer events
-  🟡 Connection Timeouts: 89 timeout events
+⚠ DYNAMIC PATTERNS DETECTED
+  🔴 [Spike] Spike of 89 at 2024-01-15 14:30, avg 2.1/bucket
+      upstream timed out (110: Connection timed out)
+  🟡 [Recurring] Recurring 523 times across 85% of time range
+      Failed password for invalid user admin from <IP>...
+  🟡 [Burst] 45 occurrences in only 3 time windows
+      Connection refused
 ```
 
 ### HTML Reports & Live Server
@@ -216,18 +226,34 @@ ERR     postgresql      connection limit exceeded for non-superusers
 | 6 | INFO | Informational |
 | 7 | DEBUG | Debug-level messages |
 
-## Pattern Detection
+## Dynamic Pattern Detection
 
-jlog automatically detects these patterns:
+jlog uses intelligent analysis to automatically detect anomalies in your logs - no hardcoded patterns required. It analyzes message frequency and distribution over time to identify:
 
-| Pattern | Severity | Trigger |
-|---------|----------|---------|
-| SSH Brute Force | 🔴 Critical (10+) / 🟡 Warning (3+) | "Failed password" messages |
-| Out of Memory | 🔴 Critical | OOM killer events |
-| Service Restarts | 🟡 Warning | Restart events (2+) |
-| Connection Timeouts | 🟡 Warning | Timeout messages (2+) |
-| Disk Issues | 🟡 Warning | Disk errors or >90% usage |
-| Firewall Blocks | 🔵 Info | UFW BLOCK messages (2+) |
+| Pattern | Icon | Description |
+|---------|------|-------------|
+| **Spike** | 📈 | Sudden increase in message frequency (3x above average) |
+| **Burst** | 💥 | Many occurrences concentrated in a short time window |
+| **Recurring** | 🔄 | Message appears consistently across the time range |
+| **Increasing** | 📊 | Message rate growing over time (2x increase in second half) |
+| **High Volume** | 🔥 | Message dominates the error log (>25% of all errors) |
+
+### How It Works
+
+1. **Collects data** at minute-level granularity during log processing
+2. **Analyzes distribution** of each error/warning message across time buckets
+3. **Detects anomalies** by comparing against statistical baselines:
+   - Spikes: max bucket value > 3x average
+   - Bursts: occurrences in <30% of time range
+   - Recurring: present in >40% of time buckets
+   - Increasing: second half rate > 2x first half
+
+### Benefits
+
+- **Works with any log format** - No need to define patterns for your specific system
+- **Adapts automatically** - Detects issues unique to your application
+- **Prioritizes by severity** - Critical issues shown first
+- **Shows context** - Displays the actual message and statistics
 
 ## Performance
 
@@ -236,31 +262,57 @@ jlog automatically detects these patterns:
 - **128KB I/O buffer** - Optimized for large sequential reads
 - **Progress indicator** - Shows progress for files >10MB
 
-## Input Format
+## Supported Log Formats
 
-jlog expects journalctl JSON output (one JSON object per line):
+jlog automatically detects and parses multiple log formats:
+
+### Plain Text Syslog (Default)
+Standard syslog format used by most Linux systems:
+```
+Jan 10 16:42:10 hostname service[pid]: message
+```
 
 ```bash
-# Generate compatible input
+# Direct file analysis
+jlog analyze --path /var/log/syslog
+jlog analyze --path /var/log/messages
+```
+
+### Journalctl Short-Precise
+Includes microseconds (journalctl -o short-precise):
+```
+Jan 06 15:51:19.246531 hostname service[pid]: message
+```
+
+```bash
+journalctl -o short-precise > logs.txt
+jlog analyze --path logs.txt
+```
+
+### JSON Format
+Journalctl JSON export (one object per line):
+```bash
 journalctl -o json > logs.json
 journalctl -o json --since "1 hour ago" > recent.json
-journalctl -o json -u nginx -u postgresql > services.json
+jlog analyze --path logs.json
 ```
 
 ## Roadmap
 
 ### Completed
 
-- ✅ Time-series bucketing (logs per hour)
+- ✅ Time-series bucketing (configurable 1min to 1hr granularity)
 - ✅ Generate HTML reports with embedded charts
 - ✅ Live web server for interactive viewing
 - ✅ Real-time monitoring mode
-- ✅ Pattern detection (SSH brute force, OOM, timeouts, etc.)
+- ✅ Dynamic pattern detection (spikes, bursts, recurring, increasing)
+- ✅ Plain text syslog format support
+- ✅ Journalctl short-precise format support (with microseconds)
+- ✅ Configurable bucket size selector in web UI
 
 ### Planned Features
 
 **Advanced Analysis**
-- Anomaly detection (baseline vs. current behavior)
 - Service health scoring algorithm
 - Correlation detection ("Service X fails 30 seconds after Service Y restarts")
 
@@ -275,7 +327,6 @@ journalctl -o json -u nginx -u postgresql > services.json
 - Scrollable log viewer
 
 **Extended Format Support**
-- Syslog parsing
 - Apache/Nginx access logs
 - Custom log format definitions
 
@@ -287,7 +338,6 @@ journalctl -o json -u nginx -u postgresql > services.json
 ### Ideas
 
 - **"Explain this error"** - Integrate with LLM API to explain common systemd errors
-- **Machine learning lite** - Learn "normal" baseline patterns, flag deviations
 - **Cluster similar errors** - Group related error messages automatically
 - **Plugin system** - Let users write custom analyzers
 
