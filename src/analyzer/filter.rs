@@ -2,6 +2,16 @@ use regex::Regex;
 use once_cell::sync::Lazy;
 use crate::journalctl::JournalEntry;
 
+/// Regex for extracting msg-name from JSON payloads
+static MSG_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#""msg-name"\s*:\s*"([^"]+)""#).unwrap()
+});
+
+/// Regex for JSON objects (simple heuristic: starts with { ends with })
+static JSON_OBJECT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{[^{}]*(\{[^{}]*\}[^{}]*)*\}").unwrap()
+});
+
 /// Pre-compiled regex patterns for aggressive message normalization
 /// This groups similar messages together by replacing variable parts
 static NORMALIZE_PATTERNS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
@@ -67,6 +77,19 @@ impl NormalizeRegex {
     pub fn normalize(&self, msg: &str) -> String {
         let mut result = msg.to_string();
 
+        // First, handle JSON objects specially - extract msg-name if present
+        result = JSON_OBJECT_RE.replace_all(&result, |caps: &regex::Captures| {
+            let json_str = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            // Try to extract msg-name from the JSON
+            if let Some(name_caps) = MSG_NAME_RE.captures(json_str) {
+                if let Some(name) = name_caps.get(1) {
+                    return format!("<JSON:msg-name={}>", name.as_str());
+                }
+            }
+            "<JSON>".to_string()
+        }).to_string();
+
+        // Apply standard normalization patterns
         for (pattern, replacement) in NORMALIZE_PATTERNS.iter() {
             result = pattern.replace_all(&result, *replacement).to_string();
         }
