@@ -17,10 +17,10 @@ pub struct AnalysisState {
     pub entries_by_service: HashMap<String, usize>,
     pub error_messages: HashMap<String, usize>,
 
-    // Time-series data (hour buckets)
+    // Time-series data (minute buckets for flexible aggregation)
     pub time_series: HashMap<String, TimeBucket>,
 
-    // Message trends over time: message -> (time_bucket -> count)
+    // Message trends over time: message -> (minute_bucket -> count)
     pub message_trends: HashMap<String, HashMap<String, usize>>,
 
     // Pattern counters
@@ -62,8 +62,8 @@ impl AnalysisState {
         // Count by service
         *self.entries_by_service.entry(entry.service()).or_insert(0) += 1;
 
-        // Track time-series data
-        if let Some(bucket_key) = entry.hour_bucket() {
+        // Track time-series data (at minute granularity for flexible aggregation)
+        if let Some(bucket_key) = entry.minute_bucket() {
             let bucket = self.time_series.entry(bucket_key).or_default();
             bucket.total += 1;
             if priority <= 3 {
@@ -79,8 +79,8 @@ impl AnalysisState {
             if !msg.is_empty() {
                 *self.error_messages.entry(msg.clone()).or_insert(0) += 1;
 
-                // Track message trend over time
-                if let Some(bucket_key) = entry.hour_bucket() {
+                // Track message trend over time (at minute granularity)
+                if let Some(bucket_key) = entry.minute_bucket() {
                     let msg_buckets = self.message_trends.entry(msg).or_insert_with(HashMap::new);
                     *msg_buckets.entry(bucket_key).or_insert(0) += 1;
                 }

@@ -2,9 +2,10 @@ use serde::Deserialize;
 use regex::Regex;
 use once_cell::sync::Lazy;
 
-/// Regex for parsing syslog format: "Mon DD HH:MM:SS hostname service[pid]: message"
+/// Regex for parsing syslog format: "Mon DD HH:MM:SS[.microsecs] hostname service[pid]: message"
+/// Supports both standard syslog and journalctl short-precise format with microseconds
 static SYSLOG_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^([A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+([^\[:]+)(?:\[(\d+)\])?:\s*(.*)$").unwrap()
+    Regex::new(r"^([A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(\S+)\s+([^\[:]+)(?:\[(\d+)\])?:\s*(.*)$").unwrap()
 });
 
 /// Represents a single journal entry from journalctl JSON output
@@ -72,6 +73,16 @@ impl JournalEntry {
             chrono::DateTime::from_timestamp(hour, 0)
                 .map(|dt| dt.format("%Y-%m-%d %H:00").to_string())
                 .unwrap_or_else(|| format!("{}", hour))
+        })
+    }
+
+    /// Get minute bucket (YYYY-MM-DD HH:MM) for fine-grained time-series grouping
+    pub fn minute_bucket(&self) -> Option<String> {
+        self.timestamp_secs().map(|secs| {
+            let minute = (secs / 60) * 60;
+            chrono::DateTime::from_timestamp(minute, 0)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| format!("{}", minute))
         })
     }
 

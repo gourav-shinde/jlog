@@ -14,12 +14,6 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
     let errors = state.entries_by_priority[3];
     let warnings = state.entries_by_priority[4];
 
-    let time_series = state.sorted_time_series();
-    let time_labels: Vec<_> = time_series.iter().map(|(t, _)| format!("\"{}\"", t)).collect();
-    let time_totals: Vec<_> = time_series.iter().map(|(_, b)| b.total.to_string()).collect();
-    let time_errors: Vec<_> = time_series.iter().map(|(_, b)| b.errors.to_string()).collect();
-    let time_warnings: Vec<_> = time_series.iter().map(|(_, b)| b.warnings.to_string()).collect();
-
     let top_services = state.top_services(10);
     let service_labels: Vec<_> = top_services.iter().map(|(s, _)| format!("\"{}\"", s)).collect();
     let service_counts: Vec<_> = top_services.iter().map(|(_, c)| c.to_string()).collect();
@@ -44,42 +38,36 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
             class, icon, p.name, p.description)
     }).collect::<Vec<_>>().join("\n");
 
-    // Build message trends data for chart
-    let all_buckets = state.all_time_buckets();
+    // Build raw minute-level data as JSON for client-side aggregation
+    let time_series = state.sorted_time_series();
+    let raw_time_data: String = time_series.iter().map(|(t, b)| {
+        format!(r#"{{"t":"{}","total":{},"errors":{},"warnings":{}}}"#, t, b.total, b.errors, b.warnings)
+    }).collect::<Vec<_>>().join(",");
+
+    // Build message trends raw data
     let message_trends = state.top_message_trends(10);
-
-    let trend_labels: Vec<_> = all_buckets.iter().map(|t| format!("\"{}\"", t)).collect();
-
-    // Generate datasets for each message
     let colors = ["#58a6ff", "#f85149", "#d29922", "#3fb950", "#a371f7", "#f778ba", "#79c0ff", "#ffa657", "#56d364", "#ff7b72"];
 
-    let trend_datasets: String = message_trends.iter().enumerate().map(|(i, (msg, buckets))| {
-        let color = colors[i % colors.len()];
-        // Create data array matching all_buckets order
-        let data: Vec<String> = all_buckets.iter().map(|bucket| {
-            buckets.iter()
-                .find(|(b, _)| b == bucket)
-                .map(|(_, count)| count.to_string())
-                .unwrap_or_else(|| "0".to_string())
-        }).collect();
-
-        let escaped_label = msg.replace('"', "\\\"").chars().take(50).collect::<String>();
-        format!(
-            r#"{{ label: "{}{}", data: [{}], borderColor: '{}', backgroundColor: '{}22', fill: false, tension: 0.1 }}"#,
+    let raw_trends_data: String = message_trends.iter().enumerate().map(|(i, (msg, buckets))| {
+        let escaped_label = msg.replace('"', "\\\"").replace('\n', " ").chars().take(50).collect::<String>();
+        let data_points: String = buckets.iter().map(|(t, c)| {
+            format!(r#"{{"t":"{}","c":{}}}"#, t, c)
+        }).collect::<Vec<_>>().join(",");
+        format!(r#"{{"label":"{}{}","color":"{}","data":[{}]}}"#,
             escaped_label,
             if msg.len() > 50 { "..." } else { "" },
-            data.join(","),
-            color,
-            color
+            colors[i % colors.len()],
+            data_points
         )
-    }).collect::<Vec<_>>().join(",\n                    ");
+    }).collect::<Vec<_>>().join(",");
 
-    // Build trends table
+    // Build trends table (static, shows totals)
     let trends_table_rows: String = message_trends.iter().enumerate().map(|(i, (msg, buckets))| {
         let total: usize = buckets.iter().map(|(_, c)| *c).sum();
         let escaped_msg = msg.replace('<', "&lt;").replace('>', "&gt;");
+        let max_count = buckets.iter().map(|(_, c)| *c).max().unwrap_or(1);
         let sparkline: String = buckets.iter().map(|(_, c)| {
-            let height = if total > 0 { (*c as f64 / total as f64 * 100.0).min(100.0) } else { 0.0 };
+            let height = if max_count > 0 { (*c as f64 / max_count as f64 * 100.0).min(100.0) } else { 0.0 };
             format!(r#"<div class="spark-bar" style="height: {}%"></div>"#, height.max(5.0))
         }).collect::<Vec<_>>().join("");
 
@@ -144,6 +132,15 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
         .trends-legend {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; padding: 15px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; }}
         .legend-item {{ display: flex; align-items: center; gap: 5px; font-size: 0.85em; }}
         .legend-color {{ width: 12px; height: 12px; border-radius: 2px; }}
+
+        /* Bucket size selector */
+        .chart-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
+        .chart-title {{ color: #c9d1d9; font-size: 1em; font-weight: 600; }}
+        .bucket-selector {{ display: flex; align-items: center; gap: 10px; }}
+        .bucket-selector label {{ color: #8b949e; font-size: 0.85em; }}
+        .bucket-selector select {{ background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 0.85em; cursor: pointer; }}
+        .bucket-selector select:hover {{ border-color: #58a6ff; }}
+        .bucket-selector select:focus {{ outline: none; border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3); }}
     </style>
 </head>
 <body>
@@ -173,7 +170,20 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
 
             <h2>Charts</h2>
             <div class="charts">
-                <div class="chart-container">
+                <div class="chart-container full-width">
+                    <div class="chart-header">
+                        <span class="chart-title">Log Volume Over Time</span>
+                        <div class="bucket-selector">
+                            <label for="timeBucket">Bucket size:</label>
+                            <select id="timeBucket" onchange="updateTimeChart()">
+                                <option value="1">1 minute</option>
+                                <option value="5">5 minutes</option>
+                                <option value="15">15 minutes</option>
+                                <option value="30">30 minutes</option>
+                                <option value="60" selected>1 hour</option>
+                            </select>
+                        </div>
+                    </div>
                     <canvas id="timeChart"></canvas>
                 </div>
                 <div class="chart-container">
@@ -198,6 +208,19 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
 
             <div class="charts">
                 <div class="chart-container full-width">
+                    <div class="chart-header">
+                        <span class="chart-title">Message Trends</span>
+                        <div class="bucket-selector">
+                            <label for="trendsBucket">Bucket size:</label>
+                            <select id="trendsBucket" onchange="updateTrendsChart()">
+                                <option value="1">1 minute</option>
+                                <option value="5">5 minutes</option>
+                                <option value="15">15 minutes</option>
+                                <option value="30">30 minutes</option>
+                                <option value="60" selected>1 hour</option>
+                            </select>
+                        </div>
+                    </div>
                     <canvas id="trendsChart"></canvas>
                 </div>
             </div>
@@ -211,6 +234,13 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
     </div>
 
     <script>
+        // Raw minute-level data
+        const rawTimeData = [{}];
+        const rawTrendsData = [{}];
+
+        // Chart instances
+        let timeChart, trendsChart;
+
         // Tab switching
         function showTab(tabId) {{
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -219,23 +249,105 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
             document.querySelector(`[onclick="showTab('${{tabId}}')"]`).classList.add('active');
         }}
 
-        // Time series chart
-        new Chart(document.getElementById('timeChart'), {{
+        // Aggregate minute data into larger buckets
+        function aggregateData(data, bucketMinutes) {{
+            const buckets = {{}};
+            data.forEach(d => {{
+                const date = new Date(d.t.replace(' ', 'T') + ':00');
+                const mins = date.getMinutes();
+                const bucketMins = Math.floor(mins / bucketMinutes) * bucketMinutes;
+                date.setMinutes(bucketMins, 0, 0);
+                const key = date.toISOString().slice(0, 16).replace('T', ' ');
+                if (!buckets[key]) buckets[key] = {{ total: 0, errors: 0, warnings: 0 }};
+                buckets[key].total += d.total;
+                buckets[key].errors += d.errors;
+                buckets[key].warnings += d.warnings;
+            }});
+            return Object.entries(buckets).sort((a, b) => a[0].localeCompare(b[0]));
+        }}
+
+        // Aggregate trends data
+        function aggregateTrendsData(trendsData, bucketMinutes) {{
+            return trendsData.map(series => {{
+                const buckets = {{}};
+                series.data.forEach(d => {{
+                    const date = new Date(d.t.replace(' ', 'T') + ':00');
+                    const mins = date.getMinutes();
+                    const bucketMins = Math.floor(mins / bucketMinutes) * bucketMinutes;
+                    date.setMinutes(bucketMins, 0, 0);
+                    const key = date.toISOString().slice(0, 16).replace('T', ' ');
+                    buckets[key] = (buckets[key] || 0) + d.c;
+                }});
+                return {{
+                    label: series.label,
+                    color: series.color,
+                    data: Object.entries(buckets).sort((a, b) => a[0].localeCompare(b[0]))
+                }};
+            }});
+        }}
+
+        // Get all unique bucket keys from trends data
+        function getAllTrendBuckets(aggregatedTrends) {{
+            const allKeys = new Set();
+            aggregatedTrends.forEach(s => s.data.forEach(d => allKeys.add(d[0])));
+            return Array.from(allKeys).sort();
+        }}
+
+        // Update time series chart
+        function updateTimeChart() {{
+            const bucketMinutes = parseInt(document.getElementById('timeBucket').value);
+            const aggregated = aggregateData(rawTimeData, bucketMinutes);
+            const labels = aggregated.map(d => d[0]);
+            const totals = aggregated.map(d => d[1].total);
+            const errors = aggregated.map(d => d[1].errors);
+            const warnings = aggregated.map(d => d[1].warnings);
+
+            timeChart.data.labels = labels;
+            timeChart.data.datasets[0].data = totals;
+            timeChart.data.datasets[1].data = errors;
+            timeChart.data.datasets[2].data = warnings;
+            timeChart.update();
+        }}
+
+        // Update trends chart
+        function updateTrendsChart() {{
+            const bucketMinutes = parseInt(document.getElementById('trendsBucket').value);
+            const aggregated = aggregateTrendsData(rawTrendsData, bucketMinutes);
+            const allBuckets = getAllTrendBuckets(aggregated);
+
+            trendsChart.data.labels = allBuckets;
+            trendsChart.data.datasets = aggregated.map(s => ({{
+                label: s.label,
+                data: allBuckets.map(b => {{
+                    const found = s.data.find(d => d[0] === b);
+                    return found ? found[1] : 0;
+                }}),
+                borderColor: s.color,
+                backgroundColor: s.color + '22',
+                fill: false,
+                tension: 0.1
+            }}));
+            trendsChart.update();
+        }}
+
+        // Initialize time chart
+        const initTimeData = aggregateData(rawTimeData, 60);
+        timeChart = new Chart(document.getElementById('timeChart'), {{
             type: 'line',
             data: {{
-                labels: [{}],
+                labels: initTimeData.map(d => d[0]),
                 datasets: [
-                    {{ label: 'Total', data: [{}], borderColor: '#58a6ff', fill: false }},
-                    {{ label: 'Errors', data: [{}], borderColor: '#f85149', fill: false }},
-                    {{ label: 'Warnings', data: [{}], borderColor: '#d29922', fill: false }}
+                    {{ label: 'Total', data: initTimeData.map(d => d[1].total), borderColor: '#58a6ff', fill: false }},
+                    {{ label: 'Errors', data: initTimeData.map(d => d[1].errors), borderColor: '#f85149', fill: false }},
+                    {{ label: 'Warnings', data: initTimeData.map(d => d[1].warnings), borderColor: '#d29922', fill: false }}
                 ]
             }},
             options: {{
                 responsive: true,
-                plugins: {{ title: {{ display: true, text: 'Log Volume Over Time', color: '#c9d1d9' }} }},
+                plugins: {{ legend: {{ labels: {{ color: '#c9d1d9' }} }} }},
                 scales: {{
-                    x: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#30363d' }} }},
-                    y: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#30363d' }} }}
+                    x: {{ ticks: {{ color: '#8b949e', maxTicksLimit: 12 }}, grid: {{ color: '#30363d' }} }},
+                    y: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#30363d' }}, beginAtZero: true }}
                 }}
             }}
         }});
@@ -271,27 +383,36 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
             }}
         }});
 
-        // Message trends chart
-        new Chart(document.getElementById('trendsChart'), {{
+        // Initialize trends chart
+        const initTrendsData = aggregateTrendsData(rawTrendsData, 60);
+        const initTrendBuckets = getAllTrendBuckets(initTrendsData);
+        trendsChart = new Chart(document.getElementById('trendsChart'), {{
             type: 'line',
             data: {{
-                labels: [{}],
-                datasets: [
-                    {}
-                ]
+                labels: initTrendBuckets,
+                datasets: initTrendsData.map(s => ({{
+                    label: s.label,
+                    data: initTrendBuckets.map(b => {{
+                        const found = s.data.find(d => d[0] === b);
+                        return found ? found[1] : 0;
+                    }}),
+                    borderColor: s.color,
+                    backgroundColor: s.color + '22',
+                    fill: false,
+                    tension: 0.1
+                }}))
             }},
             options: {{
                 responsive: true,
                 interaction: {{ mode: 'index', intersect: false }},
                 plugins: {{
-                    title: {{ display: true, text: 'Message Frequency Over Time', color: '#c9d1d9' }},
                     legend: {{
                         position: 'bottom',
                         labels: {{ color: '#c9d1d9', boxWidth: 12, padding: 15 }}
                     }}
                 }},
                 scales: {{
-                    x: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#30363d' }} }},
+                    x: {{ ticks: {{ color: '#8b949e', maxTicksLimit: 12 }}, grid: {{ color: '#30363d' }} }},
                     y: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#30363d' }}, beginAtZero: true }}
                 }}
             }}
@@ -307,15 +428,11 @@ pub fn build_html(state: &AnalysisState, lines_read: usize) -> String {
         if patterns.is_empty() { "<div class=\"pattern-card info\">No concerning patterns detected.</div>".to_string() } else { pattern_cards },
         error_rows,
         trends_table_rows,
-        time_labels.join(","),
-        time_totals.join(","),
-        time_errors.join(","),
-        time_warnings.join(","),
+        raw_time_data,
+        raw_trends_data,
         priority_labels.join(","),
         priority_counts.join(","),
         service_labels.join(","),
-        service_counts.join(","),
-        trend_labels.join(","),
-        trend_datasets
+        service_counts.join(",")
     )
 }
