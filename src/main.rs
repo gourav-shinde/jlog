@@ -1,31 +1,31 @@
-mod cli;
 mod analyzer;
+mod app;
+mod background;
 mod journalctl;
-mod monitor;
-mod report;
-mod server;
+mod ui;
+mod workers;
 
-mod helper {
-    #[path = "../helper/BufferFileReader.rs"]
-    mod buffer_file_reader;
-    pub use buffer_file_reader::BufferedFileReader;
-}
+use app::JlogApp;
 
-use cli::{Args, Commands};
-use clap::Parser;
-
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-
-    match args.command {
-        Commands::Analyze { path, unit, priority, top, pattern, report, serve, port, .. } => {
-            println!("jlog - Journalctl Log Analyzer\n");
-            analyzer::analyze(path, unit, priority, top, pattern, report, serve, port)?;
-        }
-        Commands::Monitor { path, unit, priority, pattern } => {
-            monitor::monitor(path, unit, priority, pattern)?;
-        }
+fn main() -> eframe::Result<()> {
+    // Prefer X11 on Linux — Wayland under WSLg often gives "Broken pipe" errors.
+    // Users can override with WINIT_UNIX_BACKEND=wayland if needed.
+    #[cfg(target_os = "linux")]
+    if std::env::var("WINIT_UNIX_BACKEND").is_err() {
+        // SAFETY: called at program start before any other threads are spawned.
+        unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "x11") };
     }
 
-    Ok(())
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1400.0, 800.0])
+            .with_title("jlog - Log Viewer"),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "jlog",
+        options,
+        Box::new(|cc| Ok(Box::new(JlogApp::new(cc)))),
+    )
 }
