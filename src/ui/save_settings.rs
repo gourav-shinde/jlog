@@ -17,9 +17,12 @@ pub struct SaveSettings {
 
 impl Default for SaveSettings {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let dest = std::path::PathBuf::from(&home).join("logs");
         Self {
-            destination: format!("{}/logs", home),
+            destination: dest.to_string_lossy().to_string(),
             filename_template: "{host}_{date}_{time}".to_string(),
             format: SaveFormat::Json,
             auto_save: true,
@@ -45,7 +48,9 @@ impl SaveSettings {
             SaveFormat::PlainText => "log",
         };
 
-        format!("{}/{}.{}", self.destination, name, ext)
+        let path = std::path::PathBuf::from(&self.destination)
+            .join(format!("{}.{}", name, ext));
+        path.to_string_lossy().to_string()
     }
 }
 
