@@ -28,12 +28,27 @@ fn priority_label(priority: u8) -> &'static str {
 
 pub struct LogViewer {
     pub auto_scroll: bool,
+    /// Index into LogStore.entries of the selected row, or None.
+    pub selected_entry: Option<usize>,
 }
 
 impl Default for LogViewer {
     fn default() -> Self {
-        Self { auto_scroll: true }
+        Self {
+            auto_scroll: true,
+            selected_entry: None,
+        }
     }
+}
+
+/// Try to pretty-format a JSON string. Returns None if not valid JSON.
+fn try_pretty_json(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    serde_json::to_string_pretty(&value).ok()
 }
 
 impl LogViewer {
@@ -54,6 +69,82 @@ impl LogViewer {
             return;
         }
 
+        // Detail panel at the bottom when a row is selected
+        if let Some(entry_idx) = self.selected_entry {
+            if let Some(entry) = store.entries.get(entry_idx) {
+                egui::TopBottomPanel::bottom("detail_panel")
+                    .resizable(true)
+                    .default_height(180.0)
+                    .min_height(80.0)
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong("Row Detail");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("X Close").clicked() {
+                                    self.selected_entry = None;
+                                }
+                            });
+                        });
+                        ui.separator();
+
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                egui::Grid::new("detail_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("Line:").strong());
+                                        ui.label(egui::RichText::new(format!("{}", entry.line_num)).monospace());
+                                        ui.end_row();
+
+                                        ui.label(egui::RichText::new("Timestamp:").strong());
+                                        ui.label(egui::RichText::new(&entry.timestamp).monospace());
+                                        ui.end_row();
+
+                                        ui.label(egui::RichText::new("Priority:").strong());
+                                        ui.label(egui::RichText::new(priority_label(entry.priority))
+                                            .monospace()
+                                            .color(priority_color(entry.priority)));
+                                        ui.end_row();
+
+                                        ui.label(egui::RichText::new("Service:").strong());
+                                        ui.label(egui::RichText::new(&entry.service)
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(130, 200, 255)));
+                                        ui.end_row();
+                                    });
+
+                                ui.separator();
+                                ui.label(egui::RichText::new("Message:").strong());
+
+                                if let Some(pretty) = try_pretty_json(&entry.message) {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&pretty)
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(180, 230, 140)),
+                                        )
+                                        .wrap_mode(egui::TextWrapMode::Extend)
+                                        .selectable(true),
+                                    );
+                                } else {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.message)
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(220, 220, 220)),
+                                        )
+                                        .wrap_mode(egui::TextWrapMode::Wrap)
+                                        .selectable(true),
+                                    );
+                                }
+                            });
+                    });
+            }
+        }
+
+        // Log table
         egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -85,13 +176,23 @@ impl LogViewer {
                     scroll = scroll.stick_to_bottom(true);
                 }
 
+                let selected = self.selected_entry;
+                let mut new_selection = self.selected_entry;
+
                 scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
                         let entry_idx = filtered_indices[row_idx];
                         let entry = &store.entries[entry_idx];
-                        self.render_row(ui, entry, row_height, filter);
+                        let is_selected = selected == Some(entry_idx);
+
+                        let resp = self.render_row(ui, entry, row_height, filter, is_selected);
+                        if resp.clicked() {
+                            new_selection = if is_selected { None } else { Some(entry_idx) };
+                        }
                     }
                 });
+
+                self.selected_entry = new_selection;
             });
     }
 
@@ -101,11 +202,12 @@ impl LogViewer {
         entry: &LogEntry,
         row_height: f32,
         filter: &FilterCriteria,
-    ) {
+        is_selected: bool,
+    ) -> egui::Response {
         let pri_color = priority_color(entry.priority);
         let widths = [60.0, 160.0, 60.0, 150.0];
 
-        ui.horizontal(|ui| {
+        let row_resp = ui.horizontal(|ui| {
             ui.add_sized([widths[0], row_height], egui::Label::new(
                 egui::RichText::new(format!("{}", entry.line_num))
                     .monospace()
@@ -137,7 +239,6 @@ impl LogViewer {
                 let mut last_end = 0;
 
                 for m in regex.find_iter(msg) {
-                    // Text before match
                     if m.start() > last_end {
                         job.append(
                             &msg[last_end..m.start()],
@@ -149,7 +250,6 @@ impl LogViewer {
                             },
                         );
                     }
-                    // Highlighted match
                     job.append(
                         m.as_str(),
                         0.0,
@@ -162,7 +262,6 @@ impl LogViewer {
                     );
                     last_end = m.end();
                 }
-                // Text after last match
                 if last_end < msg.len() {
                     job.append(
                         &msg[last_end..],
@@ -184,5 +283,17 @@ impl LogViewer {
                 ).wrap_mode(egui::TextWrapMode::Extend));
             }
         });
+
+        // Make the whole row rect clickable and paint background
+        let rect = row_resp.response.rect;
+        let response = ui.interact(rect, ui.id().with(entry.line_num), egui::Sense::click());
+
+        if is_selected {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(40, 60, 90, 180));
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(50, 50, 65, 120));
+        }
+
+        response
     }
 }
