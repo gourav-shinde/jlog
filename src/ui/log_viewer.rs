@@ -54,41 +54,45 @@ impl LogViewer {
             return;
         }
 
-        // Header
-        ui.horizontal(|ui| {
-            let widths = [60.0, 160.0, 60.0, 150.0];
-            ui.add_sized([widths[0], row_height], egui::Label::new(
-                egui::RichText::new("Line#").strong().monospace(),
-            ));
-            ui.add_sized([widths[1], row_height], egui::Label::new(
-                egui::RichText::new("Time").strong().monospace(),
-            ));
-            ui.add_sized([widths[2], row_height], egui::Label::new(
-                egui::RichText::new("Pri").strong().monospace(),
-            ));
-            ui.add_sized([widths[3], row_height], egui::Label::new(
-                egui::RichText::new("Service").strong().monospace(),
-            ));
-            ui.label(egui::RichText::new("Message").strong().monospace());
-        });
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // Header
+                ui.horizontal(|ui| {
+                    let widths = [60.0, 160.0, 60.0, 150.0];
+                    ui.add_sized([widths[0], row_height], egui::Label::new(
+                        egui::RichText::new("Line#").strong().monospace(),
+                    ));
+                    ui.add_sized([widths[1], row_height], egui::Label::new(
+                        egui::RichText::new("Time").strong().monospace(),
+                    ));
+                    ui.add_sized([widths[2], row_height], egui::Label::new(
+                        egui::RichText::new("Pri").strong().monospace(),
+                    ));
+                    ui.add_sized([widths[3], row_height], egui::Label::new(
+                        egui::RichText::new("Service").strong().monospace(),
+                    ));
+                    ui.label(egui::RichText::new("Message").strong().monospace());
+                });
 
-        ui.separator();
+                ui.separator();
 
-        // Virtual-scrolling log table
-        let mut scroll = egui::ScrollArea::vertical()
-            .auto_shrink([false, false]);
+                // Virtual-scrolling log table
+                let mut scroll = egui::ScrollArea::vertical()
+                    .auto_shrink([false, false]);
 
-        if self.auto_scroll {
-            scroll = scroll.stick_to_bottom(true);
-        }
+                if self.auto_scroll {
+                    scroll = scroll.stick_to_bottom(true);
+                }
 
-        scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
-            for row_idx in row_range {
-                let entry_idx = filtered_indices[row_idx];
-                let entry = &store.entries[entry_idx];
-                self.render_row(ui, entry, row_height, filter);
-            }
-        });
+                scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
+                    for row_idx in row_range {
+                        let entry_idx = filtered_indices[row_idx];
+                        let entry = &store.entries[entry_idx];
+                        self.render_row(ui, entry, row_height, filter);
+                    }
+                });
+            });
     }
 
     fn render_row(
@@ -171,13 +175,13 @@ impl LogViewer {
                     );
                 }
 
-                ui.label(job);
+                ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
             } else {
-                ui.label(
+                ui.add(egui::Label::new(
                     egui::RichText::new(&entry.message)
                         .monospace()
                         .color(egui::Color32::from_rgb(220, 220, 220)),
-                );
+                ).wrap_mode(egui::TextWrapMode::Extend));
             }
         });
     }
