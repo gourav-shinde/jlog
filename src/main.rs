@@ -8,8 +8,6 @@ mod workers;
 use app::JlogApp;
 
 fn main() -> eframe::Result<()> {
-    // Prefer X11 on Linux — Wayland under WSLg often gives "Broken pipe" errors.
-    // Users can override with WINIT_UNIX_BACKEND=wayland if needed.
     #[cfg(target_os = "linux")]
     if std::env::var("WINIT_UNIX_BACKEND").is_err() {
         // SAFETY: called at program start before any other threads are spawned.
@@ -19,7 +17,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
-            .with_title("jlog - Log Viewer"),
+            .with_title("jlog - Log Viewer")
+            ,
         ..Default::default()
     };
 

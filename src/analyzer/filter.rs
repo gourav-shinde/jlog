@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use regex::Regex;
 use crate::analyzer::state::LogEntry;
 
@@ -10,7 +11,8 @@ pub enum CombineMode {
 }
 
 pub struct FilterCriteria {
-    pub unit: Option<String>,
+    /// Empty set means "all services". Non-empty means only matching services pass.
+    pub units: HashSet<String>,
     pub max_priority: u8,
     pub pattern: Option<Regex>,
     pub pattern2: Option<Regex>,
@@ -20,7 +22,7 @@ pub struct FilterCriteria {
 impl Default for FilterCriteria {
     fn default() -> Self {
         Self {
-            unit: None,
+            units: HashSet::new(),
             max_priority: 7,
             pattern: None,
             pattern2: None,
@@ -36,13 +38,8 @@ impl FilterCriteria {
             return false;
         }
 
-        if let Some(ref unit_filter) = self.unit {
-            if !unit_filter.is_empty() {
-                let service = entry.service.to_lowercase();
-                if !service.contains(&unit_filter.to_lowercase()) {
-                    return false;
-                }
-            }
+        if !self.units.is_empty() && !self.units.contains(&entry.service) {
+            return false;
         }
 
         let p1_match = self.pattern.as_ref()

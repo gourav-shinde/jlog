@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.30"
+eframe = "0.31"
 ssh2 = "0.9"
 rfd = "0.15"
 crossbeam-channel = "0.5"

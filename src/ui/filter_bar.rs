@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use eframe::egui;
 use crate::analyzer::{FilterCriteria, CombineMode};
 
@@ -6,7 +7,7 @@ pub struct FilterBar {
     pub pattern2_text: String,
     pub pattern_valid: bool,
     pub pattern2_valid: bool,
-    pub selected_service: String, // "" = All
+    pub selected_services: HashSet<String>,
     pub priority_choice: usize,   // index into PRIORITY_LABELS
     pub combine_mode: CombineMode,
 }
@@ -47,7 +48,7 @@ impl Default for FilterBar {
             pattern2_text: String::new(),
             pattern_valid: true,
             pattern2_valid: true,
-            selected_service: String::new(),
+            selected_services: HashSet::new(),
             priority_choice: 0,
             combine_mode: CombineMode::Match,
         }
@@ -110,22 +111,33 @@ impl FilterBar {
 
             ui.separator();
 
-            // Service combo
+            // Service multi-select
             ui.label("Service:");
-            let current = if self.selected_service.is_empty() { "All" } else { &self.selected_service };
+            let label = if self.selected_services.is_empty() {
+                "All".to_string()
+            } else if self.selected_services.len() == 1 {
+                self.selected_services.iter().next().unwrap().clone()
+            } else {
+                format!("{} selected", self.selected_services.len())
+            };
             egui::ComboBox::from_id_salt("service_filter")
-                .selected_text(current)
+                .selected_text(&label)
                 .width(150.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.selected_service.is_empty(), "All").clicked() {
-                        self.selected_service.clear();
-                        filter.unit = None;
+                    if ui.selectable_label(self.selected_services.is_empty(), "All").clicked() {
+                        self.selected_services.clear();
+                        filter.units.clear();
                         changed = true;
                     }
                     for svc in services {
-                        if ui.selectable_label(&self.selected_service == svc, svc).clicked() {
-                            self.selected_service = svc.clone();
-                            filter.unit = Some(svc.clone());
+                        let mut selected = self.selected_services.contains(svc);
+                        if ui.checkbox(&mut selected, svc).changed() {
+                            if selected {
+                                self.selected_services.insert(svc.clone());
+                            } else {
+                                self.selected_services.remove(svc);
+                            }
+                            filter.units = self.selected_services.clone();
                             changed = true;
                         }
                     }
@@ -159,7 +171,7 @@ impl FilterBar {
             if ui.small_button("Clear").clicked() {
                 self.pattern_text.clear();
                 self.pattern2_text.clear();
-                self.selected_service.clear();
+                self.selected_services.clear();
                 self.priority_choice = 0;
                 self.combine_mode = CombineMode::Match;
                 *filter = FilterCriteria::default();

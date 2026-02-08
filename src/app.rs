@@ -7,7 +7,8 @@ use crate::ui::connection_dialog::ConnectionDialog;
 use crate::ui::filter_bar::FilterBar;
 use crate::ui::log_viewer::LogViewer;
 use crate::ui::open_file_dialog::OpenFileDialog;
-use crate::workers::{file_reader, ssh_reader};
+use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog};
+use crate::workers::{file_reader, log_writer, ssh_reader};
 
 pub struct JlogApp {
     log_store: LogStore,
@@ -26,6 +27,10 @@ pub struct JlogApp {
     is_connected: bool,
     status_message: String,
     total_lines: usize,
+
+    save_settings: SaveSettings,
+    save_settings_dialog: SaveSettingsDialog,
+    current_host: String,
 
     /// File to load on first frame (from CLI argument)
     pending_file: Option<String>,
@@ -57,12 +62,17 @@ impl JlogApp {
             status_message: "Ready - File > Open or Connect SSH".to_string(),
             total_lines: 0,
 
+            save_settings: SaveSettings::default(),
+            save_settings_dialog: SaveSettingsDialog::default(),
+            current_host: "local".to_string(),
+
             pending_file,
         }
     }
 
     fn load_file(&mut self, path: String) {
         self.reset_state();
+        self.current_host = "local".to_string();
         self.is_loading = true;
         self.status_message = format!("Loading: {}", path);
 
@@ -73,6 +83,7 @@ impl JlogApp {
 
     fn start_ssh(&mut self, config: ssh_reader::SshConfig) {
         self.reset_state();
+        self.current_host = config.host.clone();
         self.is_loading = true;
         self.is_connected = false;
         self.status_message = format!("Connecting to {}...", config.host);
@@ -158,7 +169,10 @@ impl JlogApp {
                     BackgroundMessage::SshDisconnected => {
                         self.is_connected = false;
                         self.is_loading = false;
-                        if !self.status_message.starts_with("Error") {
+                        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
+                            self.save_now();
+                        }
+                        if !self.status_message.starts_with("Error") && !self.status_message.starts_with("Saved") {
                             self.status_message = format!(
                                 "Disconnected - {} entries loaded",
                                 self.log_store.entries.len()
@@ -179,6 +193,31 @@ impl JlogApp {
         }
     }
 
+    fn save_now(&mut self) {
+        let entries: Vec<&crate::analyzer::LogEntry> = if self.save_settings.save_filtered_only {
+            self.filtered_indices
+                .iter()
+                .map(|&i| &self.log_store.entries[i])
+                .collect()
+        } else {
+            self.log_store.entries.iter().collect()
+        };
+
+        if entries.is_empty() {
+            self.status_message = "Nothing to save - no log entries".to_string();
+            return;
+        }
+
+        match log_writer::save_logs(&entries, &self.save_settings, &self.current_host) {
+            Ok(path) => {
+                self.status_message = format!("Saved {} entries to {}", entries.len(), path);
+            }
+            Err(e) => {
+                self.status_message = format!("Save error: {}", e);
+            }
+        }
+    }
+
     fn apply_filter(&mut self) {
         self.filtered_indices.clear();
         for (i, entry) in self.log_store.entries.iter().enumerate() {
@@ -190,12 +229,16 @@ impl JlogApp {
 }
 
 impl eframe::App for JlogApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Match the egui dark background so no outline artifact on resize/maximize
-        [0.1, 0.1, 0.1, 1.0]
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        // Use exact egui panel background to prevent artifacts on resize/maximize
+        let c = visuals.panel_fill;
+        [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Always repaint — prevents stale frame artifacts on resize/maximize (WSL2/X11)
+        ctx.request_repaint();
+
         // Load file from CLI argument on first frame
         if let Some(path) = self.pending_file.take() {
             self.load_file(path);
@@ -204,17 +247,15 @@ impl eframe::App for JlogApp {
         // Poll background messages
         self.process_messages();
 
-        // Request repaint while loading/connected to keep polling
-        if self.is_loading || self.is_connected {
-            ctx.request_repaint();
-        }
-
         // Dialogs
         if let Some(path) = self.open_file_dialog.show(ctx) {
             self.load_file(path);
         }
         if let Some(config) = self.connection_dialog.show(ctx) {
             self.start_ssh(config);
+        }
+        if let Some(new_settings) = self.save_settings_dialog.show(ctx) {
+            self.save_settings = new_settings;
         }
 
         // Top menu bar
@@ -228,6 +269,16 @@ impl eframe::App for JlogApp {
                     if ui.button("Connect SSH...").clicked() {
                         ui.close_menu();
                         self.connection_dialog.open = true;
+                    }
+                    ui.separator();
+                    if ui.button("Save Logs Now").clicked() {
+                        ui.close_menu();
+                        self.save_now();
+                    }
+                    if ui.button("Save Settings...").clicked() {
+                        ui.close_menu();
+                        self.save_settings_dialog.load_from(&self.save_settings);
+                        self.save_settings_dialog.open = true;
                     }
                     ui.separator();
                     if self.is_connected {
