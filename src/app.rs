@@ -127,6 +127,7 @@ impl JlogApp {
         };
 
         let mut new_entries = false;
+        let entries_before = self.log_store.entries.len();
         // Drain up to 5000 messages per frame to stay responsive
         for _ in 0..5000 {
             match receiver.try_recv() {
@@ -189,6 +190,8 @@ impl JlogApp {
         }
 
         if new_entries {
+            let new_count = self.log_store.entries.len() - entries_before;
+            self.log_viewer.notify_new_entries(new_count);
             self.apply_filter();
         }
     }

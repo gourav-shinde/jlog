@@ -30,6 +30,8 @@ pub struct LogViewer {
     pub auto_scroll: bool,
     /// Index into LogStore.entries of the selected row, or None.
     pub selected_entry: Option<usize>,
+    new_entry_count: usize,
+    is_at_bottom: bool,
 }
 
 impl Default for LogViewer {
@@ -37,6 +39,8 @@ impl Default for LogViewer {
         Self {
             auto_scroll: true,
             selected_entry: None,
+            new_entry_count: 0,
+            is_at_bottom: true,
         }
     }
 }
@@ -52,6 +56,12 @@ fn try_pretty_json(s: &str) -> Option<String> {
 }
 
 impl LogViewer {
+    pub fn notify_new_entries(&mut self, count: usize) {
+        if !self.auto_scroll && !self.is_at_bottom {
+            self.new_entry_count += count;
+        }
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -179,7 +189,7 @@ impl LogViewer {
                 let selected = self.selected_entry;
                 let mut new_selection = self.selected_entry;
 
-                scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
+                let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
                         let entry_idx = filtered_indices[row_idx];
                         let entry = &store.entries[entry_idx];
@@ -191,6 +201,44 @@ impl LogViewer {
                         }
                     }
                 });
+
+                // Detect if scrolled to bottom
+                let threshold = 5.0;
+                let state = scroll_output.state;
+                let content_height = total_rows as f32 * row_height;
+                let viewport_height = scroll_output.inner_rect.height();
+                self.is_at_bottom = state.offset.y + viewport_height >= content_height - threshold;
+
+                if self.is_at_bottom || self.auto_scroll {
+                    self.new_entry_count = 0;
+                }
+
+                // Render floating "N new entries" indicator
+                if self.new_entry_count > 0 {
+                    let button_width = 160.0;
+                    let button_height = 28.0;
+                    let outer_rect = scroll_output.inner_rect;
+                    let button_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            outer_rect.center().x,
+                            outer_rect.bottom() - button_height / 2.0 - 8.0,
+                        ),
+                        egui::vec2(button_width, button_height),
+                    );
+
+                    let label = format!("\u{2193} {} new entries", self.new_entry_count);
+                    let button = egui::Button::new(
+                        egui::RichText::new(label)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(egui::Color32::from_rgb(30, 130, 160));
+
+                    if ui.put(button_rect, button).clicked() {
+                        self.auto_scroll = true;
+                        self.new_entry_count = 0;
+                    }
+                }
 
                 self.selected_entry = new_selection;
             });
