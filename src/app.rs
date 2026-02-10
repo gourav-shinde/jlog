@@ -32,6 +32,9 @@ pub struct JlogApp {
     save_settings_dialog: SaveSettingsDialog,
     current_host: String,
 
+    /// Last SSH config used (for reconnect)
+    last_ssh_config: Option<ssh_reader::SshConfig>,
+
     /// File to load on first frame (from CLI argument)
     pending_file: Option<String>,
 }
@@ -66,6 +69,8 @@ impl JlogApp {
             save_settings_dialog: SaveSettingsDialog::default(),
             current_host: "local".to_string(),
 
+            last_ssh_config: None,
+
             pending_file,
         }
     }
@@ -84,6 +89,7 @@ impl JlogApp {
     fn start_ssh(&mut self, config: ssh_reader::SshConfig) {
         self.reset_state();
         self.current_host = config.host.clone();
+        self.last_ssh_config = Some(config.clone());
         self.is_loading = true;
         self.is_connected = false;
         self.status_message = format!("Connecting to {}...", config.host);
@@ -327,6 +333,9 @@ impl eframe::App for JlogApp {
         });
 
         // Status bar
+        let mut reconnect_action = false;
+        let mut disconnect_action = false;
+        let mut connect_action = false;
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if self.is_connected {
@@ -335,6 +344,23 @@ impl eframe::App for JlogApp {
                     ui.colored_label(egui::Color32::YELLOW, "\u{25CF} Loading");
                 } else {
                     ui.colored_label(egui::Color32::GRAY, "\u{25CF} Idle");
+                }
+
+                // Quick action buttons for SSH mode
+                if self.last_ssh_config.is_some() {
+                    ui.separator();
+                    if self.is_connected {
+                        if ui.small_button("Disconnect").clicked() {
+                            disconnect_action = true;
+                        }
+                    } else if !self.is_loading {
+                        if ui.small_button("Reconnect").clicked() {
+                            reconnect_action = true;
+                        }
+                        if ui.small_button("Connect...").clicked() {
+                            connect_action = true;
+                        }
+                    }
                 }
 
                 ui.separator();
@@ -347,6 +373,19 @@ impl eframe::App for JlogApp {
                 ));
             });
         });
+
+        // Handle status bar button actions (outside borrow of ui)
+        if disconnect_action {
+            self.disconnect();
+        }
+        if reconnect_action {
+            if let Some(config) = self.last_ssh_config.clone() {
+                self.start_ssh(config);
+            }
+        }
+        if connect_action {
+            self.connection_dialog.open = true;
+        }
 
         // Central log viewer
         egui::CentralPanel::default().show(ctx, |ui| {
