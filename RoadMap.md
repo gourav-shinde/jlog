@@ -2,7 +2,7 @@
 
 ## High Value
 - **Search within messages** — Ctrl+F to jump between matches (different from the filter, which hides non-matching lines)
-- **Log tailing indicator** — visual indicator showing new lines arriving, with a "jump to bottom" button when auto-scroll is off
+- ~~**Log tailing indicator** — visual indicator showing new lines arriving, with a "jump to bottom" button when auto-scroll is off~~ **DONE**
 - **Bookmarks/pinning** — mark interesting log lines to revisit them quickly
 - **Timestamp range filter** — filter entries between two timestamps (useful for narrowing down incidents)
 
