@@ -10,7 +10,7 @@
 - **Copy row/selection** — right-click or Ctrl+C to copy a log line or selected lines to clipboard
 - **Column resizing** — draggable column widths instead of fixed widths
 - ~~**Row detail panel** — click a row to expand full message in a bottom panel (alternative to horizontal scrolling for very long messages)~~ **DONE**
-- **Persistent settings** — save/load save settings, ~~connection profiles~~, and UI preferences to a config file (`~/.config/jlog/config.json`)
+- **Persistent settings** — save/load save settings, ~~connection profiles (including passwords)~~, and UI preferences to a config file (`~/.config/jlog/config.json`)
 
 ## Power User
 - **Multiple SSH connections** — tabs for different hosts, view side-by-side
@@ -21,4 +21,4 @@
 ## Polish
 - **Keyboard shortcuts** — `j/k` for row navigation, `/` to focus filter, `g/G` for top/bottom
 - **Color themes** — light mode, custom color schemes
-- ~~**Connection history** — remember recent SSH connections for quick reconnect~~ **DONE** (via connection profiles)
+- ~~**Connection history** — remember recent SSH connections for quick reconnect~~ **DONE** (via connection profiles, SSH menu, and status bar reconnect buttons)
