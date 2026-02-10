@@ -32,13 +32,11 @@ pub fn save_logs(
             }
         }
         SaveFormat::PlainText => {
-            writeln!(file, "TIMESTAMP                    | PRI | SERVICE              | MESSAGE")?;
-            writeln!(file, "{}", "-".repeat(100))?;
             for entry in entries {
                 writeln!(
                     file,
-                    "{:<28} | {:>3} | {:<20} | {}",
-                    entry.timestamp, entry.priority, entry.service, entry.message
+                    "{} {}[{}]: {}",
+                    entry.timestamp, entry.service, entry.priority, entry.message
                 )?;
             }
         }
