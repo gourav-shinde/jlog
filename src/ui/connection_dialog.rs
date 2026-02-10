@@ -1,16 +1,19 @@
 use std::path::PathBuf;
 use eframe::egui;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crate::workers::ssh_reader::{SshConfig, AuthMethod};
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct ConnectionProfile {
-    name: String,
+pub struct ConnectionProfile {
+    pub name: String,
     host: String,
     port: u16,
     username: String,
-    auth_choice: usize,
+    pub auth_choice: usize,
     key_path: String,
     command: String,
+    #[serde(default)]
+    password: String,
 }
 
 fn profiles_path() -> PathBuf {
@@ -83,7 +86,10 @@ impl ConnectionDialog {
             self.auth_choice = profile.auth_choice;
             self.key_path = profile.key_path.clone();
             self.command = profile.command.clone();
-            self.password = String::new();
+            self.password = BASE64.decode(&profile.password)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
             self.profile_name = profile.name.clone();
             self.error = None;
         }
@@ -157,6 +163,7 @@ impl ConnectionDialog {
                                 auth_choice: self.auth_choice,
                                 key_path: self.key_path.clone(),
                                 command: self.command.clone(),
+                                password: BASE64.encode(self.password.as_bytes()),
                             };
                             // Update existing or add new
                             if let Some(pos) = self.profiles.iter().position(|p| p.name == profile.name) {
@@ -268,6 +275,17 @@ impl ConnectionDialog {
         }
 
         result
+    }
+
+    pub fn profiles(&self) -> &[ConnectionProfile] {
+        &self.profiles
+    }
+
+    pub fn select_profile(&mut self, index: usize) {
+        self.selected_profile = Some(index);
+        self.prev_selected_profile = None; // force apply on next show()
+        self.apply_profile(index);
+        self.open = true;
     }
 
     fn validate(&self) -> Result<SshConfig, String> {

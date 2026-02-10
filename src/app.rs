@@ -270,10 +270,6 @@ impl eframe::App for JlogApp {
                         ui.close_menu();
                         self.open_file_dialog.open = true;
                     }
-                    if ui.button("Connect SSH...").clicked() {
-                        ui.close_menu();
-                        self.connection_dialog.open = true;
-                    }
                     ui.separator();
                     if ui.button("Save Logs Now").clicked() {
                         ui.close_menu();
@@ -285,15 +281,34 @@ impl eframe::App for JlogApp {
                         self.save_settings_dialog.open = true;
                     }
                     ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("SSH", |ui| {
+                    if ui.button("Connect SSH...").clicked() {
+                        ui.close_menu();
+                        self.connection_dialog.open = true;
+                    }
+
+                    let profiles = self.connection_dialog.profiles().to_vec();
+                    if !profiles.is_empty() {
+                        ui.separator();
+                        for (i, profile) in profiles.iter().enumerate() {
+                            if ui.button(&profile.name).clicked() {
+                                ui.close_menu();
+                                self.connection_dialog.select_profile(i);
+                            }
+                        }
+                    }
+
                     if self.is_connected {
+                        ui.separator();
                         if ui.button("Disconnect").clicked() {
                             ui.close_menu();
                             self.disconnect();
                         }
-                    }
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
