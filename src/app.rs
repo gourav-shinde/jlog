@@ -7,7 +7,7 @@ use crate::ui::connection_dialog::ConnectionDialog;
 use crate::ui::filter_bar::FilterBar;
 use crate::ui::log_viewer::LogViewer;
 use crate::ui::open_file_dialog::OpenFileDialog;
-use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog};
+use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
 use crate::workers::{file_reader, log_writer, ssh_reader};
 
 pub struct JlogApp {
@@ -62,7 +62,7 @@ impl JlogApp {
             status_message: "Ready - File > Open or Connect SSH".to_string(),
             total_lines: 0,
 
-            save_settings: SaveSettings::default(),
+            save_settings: load_settings(),
             save_settings_dialog: SaveSettingsDialog::default(),
             current_host: "local".to_string(),
 
@@ -258,6 +258,7 @@ impl eframe::App for JlogApp {
             self.start_ssh(config);
         }
         if let Some(new_settings) = self.save_settings_dialog.show(ctx) {
+            save_settings_to_disk(&new_settings);
             self.save_settings = new_settings;
         }
 

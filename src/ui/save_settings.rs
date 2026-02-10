@@ -1,12 +1,13 @@
+use std::path::PathBuf;
 use eframe::egui;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SaveFormat {
     Json,
     PlainText,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SaveSettings {
     pub destination: String,
     pub filename_template: String,
@@ -28,6 +29,31 @@ impl Default for SaveSettings {
             auto_save: true,
             save_filtered_only: false,
         }
+    }
+}
+
+fn settings_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    PathBuf::from(home).join(".config").join("jlog").join("settings.json")
+}
+
+pub fn load_settings() -> SaveSettings {
+    let path = settings_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings_to_disk(settings: &SaveSettings) {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(data) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(&path, data);
     }
 }
 
