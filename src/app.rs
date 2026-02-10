@@ -52,6 +52,8 @@ pub struct JlogApp {
     pending_file: Option<String>,
 
     find: FindState,
+
+    show_help: bool,
 }
 
 impl JlogApp {
@@ -96,6 +98,8 @@ impl JlogApp {
                 current_match: 0,
                 request_focus: false,
             },
+
+            show_help: false,
         }
     }
 
@@ -314,6 +318,56 @@ impl eframe::App for JlogApp {
             self.save_settings = new_settings;
         }
 
+        // Help window
+        if self.show_help {
+            let mut open = self.show_help;
+            egui::Window::new("Shortcuts & About")
+                .open(&mut open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.heading("Keyboard Shortcuts");
+                    egui::Grid::new("shortcuts_grid")
+                        .striped(true)
+                        .spacing([20.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.strong("Shortcut");
+                            ui.strong("Action");
+                            ui.end_row();
+
+                            ui.monospace("Ctrl+F");
+                            ui.label("Find in logs");
+                            ui.end_row();
+
+                            ui.monospace("Escape");
+                            ui.label("Close find bar");
+                            ui.end_row();
+
+                            ui.monospace("Enter / F3");
+                            ui.label("Next find match");
+                            ui.end_row();
+
+                            ui.monospace("Shift+Enter / Shift+F3");
+                            ui.label("Previous find match");
+                            ui.end_row();
+                        });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    ui.heading("About");
+                    ui.label(format!("jlog v{}", env!("CARGO_PKG_VERSION")));
+                    ui.label("A JSON log viewer and analyzer.");
+
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        self.show_help = false;
+                    }
+                });
+            self.show_help = open;
+        }
+
         // Top menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -366,6 +420,13 @@ impl eframe::App for JlogApp {
 
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.log_viewer.auto_scroll, "Auto-scroll");
+                });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("Shortcuts & About...").clicked() {
+                        self.show_help = true;
+                        ui.close_menu();
+                    }
                 });
             });
         });
