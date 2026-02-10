@@ -8,6 +8,14 @@ mod workers;
 use app::JlogApp;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "linux")]
+    if std::env::var("WINIT_UNIX_BACKEND").is_err() {
+        // SAFETY: called at program start before any other threads are spawned.
+        // Default to X11 for stability on WSL2/WSLg; users can override with
+        // WINIT_UNIX_BACKEND=wayland for native Wayland.
+        unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "x11") };
+    }
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
