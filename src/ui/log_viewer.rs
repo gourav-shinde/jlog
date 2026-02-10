@@ -32,6 +32,8 @@ pub struct LogViewer {
     pub selected_entry: Option<usize>,
     new_entry_count: usize,
     is_at_bottom: bool,
+    /// Row index (in filtered list) to scroll to. Consumed after use.
+    pub scroll_to_row: Option<usize>,
 }
 
 impl Default for LogViewer {
@@ -41,6 +43,7 @@ impl Default for LogViewer {
             selected_entry: None,
             new_entry_count: 0,
             is_at_bottom: true,
+            scroll_to_row: None,
         }
     }
 }
@@ -68,6 +71,8 @@ impl LogViewer {
         store: &LogStore,
         filtered_indices: &[usize],
         filter: &FilterCriteria,
+        find_pattern: Option<&regex::Regex>,
+        current_find_row: Option<usize>,
     ) {
         let row_height = 18.0;
         let total_rows = filtered_indices.len();
@@ -189,13 +194,22 @@ impl LogViewer {
                 let selected = self.selected_entry;
                 let mut new_selection = self.selected_entry;
 
+                // Handle scroll-to-row: set initial offset before building scroll area
+                if let Some(target_row) = self.scroll_to_row.take() {
+                    let target_offset = target_row as f32 * row_height;
+                    scroll = scroll.vertical_scroll_offset(target_offset);
+                    // Disable auto-scroll when user navigates via find
+                    self.auto_scroll = false;
+                }
+
                 let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
                         let entry_idx = filtered_indices[row_idx];
                         let entry = &store.entries[entry_idx];
                         let is_selected = selected == Some(entry_idx);
+                        let is_current_find = current_find_row == Some(row_idx);
 
-                        let resp = self.render_row(ui, entry, row_height, filter, is_selected);
+                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find);
                         if resp.clicked() {
                             new_selection = if is_selected { None } else { Some(entry_idx) };
                         }
@@ -251,6 +265,8 @@ impl LogViewer {
         row_height: f32,
         filter: &FilterCriteria,
         is_selected: bool,
+        find_pattern: Option<&regex::Regex>,
+        is_current_find: bool,
     ) -> egui::Response {
         let pri_color = priority_color(entry.priority);
         let widths = [60.0, 160.0, 60.0, 150.0];
@@ -280,46 +296,80 @@ impl LogViewer {
                     .color(egui::Color32::from_rgb(130, 200, 255)),
             ));
 
-            // Message with regex highlighting
-            if let Some(ref regex) = filter.pattern {
+            // Message with regex highlighting (filter = orange, find = green)
+            let has_filter = filter.pattern.is_some();
+            let has_find = find_pattern.is_some();
+
+            if has_filter || has_find {
                 let msg = &entry.message;
                 let mut job = egui::text::LayoutJob::default();
-                let mut last_end = 0;
 
-                for m in regex.find_iter(msg) {
-                    if m.start() > last_end {
-                        job.append(
-                            &msg[last_end..m.start()],
-                            0.0,
-                            egui::TextFormat {
-                                font_id: egui::FontId::monospace(13.0),
-                                color: egui::Color32::from_rgb(220, 220, 220),
-                                ..Default::default()
-                            },
-                        );
+                // Collect all highlight spans: (start, end, is_find)
+                let mut spans: Vec<(usize, usize, bool)> = Vec::new();
+                if let Some(ref regex) = filter.pattern {
+                    for m in regex.find_iter(msg) {
+                        spans.push((m.start(), m.end(), false));
                     }
-                    job.append(
-                        m.as_str(),
-                        0.0,
-                        egui::TextFormat {
-                            font_id: egui::FontId::monospace(13.0),
-                            color: egui::Color32::BLACK,
-                            background: egui::Color32::from_rgb(255, 180, 50),
-                            ..Default::default()
-                        },
-                    );
-                    last_end = m.end();
                 }
-                if last_end < msg.len() {
-                    job.append(
-                        &msg[last_end..],
-                        0.0,
-                        egui::TextFormat {
-                            font_id: egui::FontId::monospace(13.0),
-                            color: egui::Color32::from_rgb(220, 220, 220),
-                            ..Default::default()
-                        },
-                    );
+                if let Some(find_re) = find_pattern {
+                    for m in find_re.find_iter(msg) {
+                        spans.push((m.start(), m.end(), true));
+                    }
+                }
+                // Sort by start; find highlights take priority (rendered on top)
+                spans.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
+
+                // Merge overlapping spans, keeping track of highlight type
+                // Simple approach: iterate char by char through highlight ranges
+                let default_fmt = egui::TextFormat {
+                    font_id: egui::FontId::monospace(13.0),
+                    color: egui::Color32::from_rgb(220, 220, 220),
+                    ..Default::default()
+                };
+                let filter_fmt = egui::TextFormat {
+                    font_id: egui::FontId::monospace(13.0),
+                    color: egui::Color32::BLACK,
+                    background: egui::Color32::from_rgb(255, 180, 50),
+                    ..Default::default()
+                };
+                let find_fmt = egui::TextFormat {
+                    font_id: egui::FontId::monospace(13.0),
+                    color: egui::Color32::BLACK,
+                    background: egui::Color32::from_rgb(80, 200, 120),
+                    ..Default::default()
+                };
+
+                // Build a per-byte highlight type: 0=none, 1=filter, 2=find
+                let len = msg.len();
+                let mut hl = vec![0u8; len];
+                for &(start, end, is_find) in &spans {
+                    for b in start..end.min(len) {
+                        if is_find {
+                            hl[b] = 2;
+                        } else if hl[b] == 0 {
+                            hl[b] = 1;
+                        }
+                    }
+                }
+
+                // Emit runs of same highlight type
+                let mut i = 0;
+                while i < len {
+                    // Find char boundary
+                    if !msg.is_char_boundary(i) { i += 1; continue; }
+                    let kind = hl[i];
+                    let run_start = i;
+                    while i < len && hl[i] == kind {
+                        i += 1;
+                    }
+                    // Snap to char boundary
+                    while i < len && !msg.is_char_boundary(i) { i += 1; }
+                    let fmt = match kind {
+                        1 => &filter_fmt,
+                        2 => &find_fmt,
+                        _ => &default_fmt,
+                    };
+                    job.append(&msg[run_start..i], 0.0, fmt.clone());
                 }
 
                 ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
@@ -338,6 +388,8 @@ impl LogViewer {
 
         if is_selected {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(40, 60, 90, 180));
+        } else if is_current_find {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(30, 80, 50, 160));
         } else if response.hovered() {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(50, 50, 65, 120));
         }

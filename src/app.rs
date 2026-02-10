@@ -1,5 +1,6 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
+use regex::Regex;
 
 use crate::analyzer::{LogStore, FilterCriteria};
 use crate::background::{BackgroundMessage, BackgroundCommand};
@@ -9,6 +10,18 @@ use crate::ui::log_viewer::LogViewer;
 use crate::ui::open_file_dialog::OpenFileDialog;
 use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
 use crate::workers::{file_reader, log_writer, ssh_reader};
+
+struct FindState {
+    active: bool,
+    search_text: String,
+    regex: Option<Regex>,
+    /// Row indices into `filtered_indices` that match
+    match_indices: Vec<usize>,
+    /// Current match position within match_indices
+    current_match: usize,
+    /// Whether the find input should request focus this frame
+    request_focus: bool,
+}
 
 pub struct JlogApp {
     log_store: LogStore,
@@ -37,6 +50,8 @@ pub struct JlogApp {
 
     /// File to load on first frame (from CLI argument)
     pending_file: Option<String>,
+
+    find: FindState,
 }
 
 impl JlogApp {
@@ -72,6 +87,15 @@ impl JlogApp {
             last_ssh_config: None,
 
             pending_file,
+
+            find: FindState {
+                active: false,
+                search_text: String::new(),
+                regex: None,
+                match_indices: Vec::new(),
+                current_match: 0,
+                request_focus: false,
+            },
         }
     }
 
@@ -227,12 +251,34 @@ impl JlogApp {
         }
     }
 
+    fn update_find_matches(&mut self) {
+        self.find.match_indices.clear();
+        self.find.current_match = 0;
+        if let Some(ref re) = self.find.regex {
+            for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
+                if re.is_match(&self.log_store.entries[entry_idx].message) {
+                    self.find.match_indices.push(row_idx);
+                }
+            }
+        }
+    }
+
+    fn find_jump_to_current(&mut self) {
+        if let Some(&row) = self.find.match_indices.get(self.find.current_match) {
+            self.log_viewer.scroll_to_row = Some(row);
+        }
+    }
+
     fn apply_filter(&mut self) {
         self.filtered_indices.clear();
         for (i, entry) in self.log_store.entries.iter().enumerate() {
             if self.filter.matches(entry) {
                 self.filtered_indices.push(i);
             }
+        }
+        // Re-scan find matches against updated filtered set
+        if self.find.active {
+            self.update_find_matches();
         }
     }
 }
@@ -332,6 +378,140 @@ impl eframe::App for JlogApp {
             }
         });
 
+        // Keyboard shortcut: Ctrl+F to open find bar
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
+            self.find.active = true;
+            self.find.request_focus = true;
+        }
+
+        // Find bar shortcuts (only when active)
+        let mut find_next = false;
+        let mut find_prev = false;
+        let mut find_close = false;
+
+        if self.find.active {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::Escape) {
+                    find_close = true;
+                }
+                if i.key_pressed(egui::Key::F3) {
+                    if i.modifiers.shift {
+                        find_prev = true;
+                    } else {
+                        find_next = true;
+                    }
+                }
+                if i.key_pressed(egui::Key::Enter) {
+                    if i.modifiers.shift {
+                        find_prev = true;
+                    } else {
+                        find_next = true;
+                    }
+                }
+            });
+        }
+
+        if find_close {
+            self.find.active = false;
+            self.find.search_text.clear();
+            self.find.regex = None;
+            self.find.match_indices.clear();
+            self.find.current_match = 0;
+        }
+
+        if find_next && !self.find.match_indices.is_empty() {
+            self.find.current_match = (self.find.current_match + 1) % self.find.match_indices.len();
+            self.find_jump_to_current();
+        }
+        if find_prev && !self.find.match_indices.is_empty() {
+            if self.find.current_match == 0 {
+                self.find.current_match = self.find.match_indices.len() - 1;
+            } else {
+                self.find.current_match -= 1;
+            }
+            self.find_jump_to_current();
+        }
+
+        // Find bar panel
+        if self.find.active {
+            egui::TopBottomPanel::top("find_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Find:");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.find.search_text)
+                            .desired_width(250.0)
+                            .hint_text("Search in messages...")
+                    );
+
+                    if self.find.request_focus {
+                        response.request_focus();
+                        self.find.request_focus = false;
+                    }
+
+                    if response.changed() {
+                        // Recompile regex on text change
+                        if self.find.search_text.is_empty() {
+                            self.find.regex = None;
+                            self.find.match_indices.clear();
+                            self.find.current_match = 0;
+                        } else {
+                            match regex::RegexBuilder::new(&regex::escape(&self.find.search_text))
+                                .case_insensitive(true)
+                                .build()
+                            {
+                                Ok(re) => {
+                                    self.find.regex = Some(re);
+                                    self.update_find_matches();
+                                    // Jump to first match
+                                    if !self.find.match_indices.is_empty() {
+                                        self.find.current_match = 0;
+                                        self.find_jump_to_current();
+                                    }
+                                }
+                                Err(_) => {
+                                    self.find.regex = None;
+                                    self.find.match_indices.clear();
+                                }
+                            }
+                        }
+                    }
+
+                    // Match counter
+                    if self.find.search_text.is_empty() {
+                        ui.label("0/0");
+                    } else if self.find.match_indices.is_empty() {
+                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "0/0");
+                    } else {
+                        ui.label(format!(
+                            "{}/{}",
+                            self.find.current_match + 1,
+                            self.find.match_indices.len()
+                        ));
+                    }
+
+                    if ui.small_button("\u{25B2} Prev").clicked() && !self.find.match_indices.is_empty() {
+                        if self.find.current_match == 0 {
+                            self.find.current_match = self.find.match_indices.len() - 1;
+                        } else {
+                            self.find.current_match -= 1;
+                        }
+                        self.find_jump_to_current();
+                    }
+                    if ui.small_button("\u{25BC} Next").clicked() && !self.find.match_indices.is_empty() {
+                        self.find.current_match = (self.find.current_match + 1) % self.find.match_indices.len();
+                        self.find_jump_to_current();
+                    }
+                    if ui.small_button("\u{2715} Close").clicked() {
+                        self.find.active = false;
+                        self.find.search_text.clear();
+                        self.find.regex = None;
+                        self.find.match_indices.clear();
+                        self.find.current_match = 0;
+                    }
+                });
+            });
+        }
+
         // Status bar
         let mut reconnect_action = false;
         let mut disconnect_action = false;
@@ -388,8 +568,14 @@ impl eframe::App for JlogApp {
         }
 
         // Central log viewer
+        let find_pattern = self.find.regex.as_ref();
+        let current_find_row = if self.find.active && !self.find.match_indices.is_empty() {
+            self.find.match_indices.get(self.find.current_match).copied()
+        } else {
+            None
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter);
+            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row);
         });
     }
 }
