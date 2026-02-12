@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use eframe::egui;
 use crate::analyzer::{FilterCriteria, CombineMode};
 
+#[derive(Clone)]
 pub struct FilterBar {
     pub pattern_text: String,
     pub pattern2_text: String,
@@ -56,6 +57,29 @@ impl Default for FilterBar {
 }
 
 impl FilterBar {
+    /// Returns true if any filter is set (non-default state).
+    pub fn is_active(&self) -> bool {
+        !self.pattern_text.is_empty()
+            || !self.pattern2_text.is_empty()
+            || !self.selected_services.is_empty()
+            || self.priority_choice != 0
+            || self.combine_mode != CombineMode::Match
+    }
+
+    /// Reconstruct a FilterCriteria from the bar's current state.
+    pub fn apply_to_filter(&self, filter: &mut FilterCriteria) {
+        *filter = FilterCriteria::default();
+        if !self.pattern_text.is_empty() {
+            filter.set_pattern(&self.pattern_text);
+        }
+        if !self.pattern2_text.is_empty() {
+            filter.set_pattern2(&self.pattern2_text);
+        }
+        filter.units = self.selected_services.clone();
+        filter.max_priority = priority_max(self.priority_choice);
+        filter.combine_mode = self.combine_mode;
+    }
+
     /// Show filter bar UI. Returns true if filter changed.
     pub fn show(&mut self, ui: &mut egui::Ui, services: &[String], filter: &mut FilterCriteria) -> bool {
         let mut changed = false;

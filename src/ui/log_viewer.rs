@@ -44,6 +44,8 @@ pub struct LogViewer {
     is_at_bottom: bool,
     /// Row index (in filtered list) to scroll to. Consumed after use.
     pub scroll_to_row: Option<usize>,
+    /// Set to true when "Show in Context" is clicked; consumed by app.
+    pub show_in_context_requested: bool,
 }
 
 impl Default for LogViewer {
@@ -54,6 +56,7 @@ impl Default for LogViewer {
             new_entry_count: 0,
             is_at_bottom: true,
             scroll_to_row: None,
+            show_in_context_requested: false,
         }
     }
 }
@@ -83,6 +86,8 @@ impl LogViewer {
         filter: &FilterCriteria,
         find_pattern: Option<&regex::Regex>,
         current_find_row: Option<usize>,
+        show_context_button: bool,
+        in_context_mode: bool,
     ) {
         // Ctrl+C: copy selected entry to clipboard
         if ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
@@ -116,6 +121,11 @@ impl LogViewer {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.small_button("X Close").clicked() {
                                     self.selected_entry = None;
+                                }
+                                if show_context_button {
+                                    if ui.small_button("Show in Context").clicked() {
+                                        self.show_in_context_requested = true;
+                                    }
                                 }
                             });
                         });
@@ -206,20 +216,22 @@ impl LogViewer {
                 let mut scroll = egui::ScrollArea::vertical()
                     .auto_shrink([false, false]);
 
+                // Handle scroll-to-row: set initial offset before building scroll area
+                // Must be checked before stick_to_bottom to avoid conflict
+                if let Some(target_row) = self.scroll_to_row.take() {
+                    // show_rows uses (row_height + item_spacing.y) per row
+                    let row_height_with_spacing = row_height + ui.spacing().item_spacing.y;
+                    let target_offset = target_row as f32 * row_height_with_spacing;
+                    scroll = scroll.vertical_scroll_offset(target_offset);
+                    self.auto_scroll = false;
+                }
+
                 if self.auto_scroll {
                     scroll = scroll.stick_to_bottom(true);
                 }
 
                 let selected = self.selected_entry;
                 let mut new_selection = self.selected_entry;
-
-                // Handle scroll-to-row: set initial offset before building scroll area
-                if let Some(target_row) = self.scroll_to_row.take() {
-                    let target_offset = target_row as f32 * row_height;
-                    scroll = scroll.vertical_scroll_offset(target_offset);
-                    // Disable auto-scroll when user navigates via find
-                    self.auto_scroll = false;
-                }
 
                 let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
@@ -228,7 +240,8 @@ impl LogViewer {
                         let is_selected = selected == Some(entry_idx);
                         let is_current_find = current_find_row == Some(row_idx);
 
-                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find);
+                        let is_context_highlight = in_context_mode && is_selected;
+                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find, is_context_highlight);
                         if resp.clicked() {
                             new_selection = if is_selected { None } else { Some(entry_idx) };
                         }
@@ -292,6 +305,7 @@ impl LogViewer {
         is_selected: bool,
         find_pattern: Option<&regex::Regex>,
         is_current_find: bool,
+        is_context_highlight: bool,
     ) -> egui::Response {
         let pri_color = priority_color(entry.priority);
         let widths = [60.0, 160.0, 60.0, 150.0];
@@ -411,7 +425,10 @@ impl LogViewer {
         let rect = row_resp.response.rect;
         let response = ui.interact(rect, ui.id().with(entry.line_num), egui::Sense::click());
 
-        if is_selected {
+        if is_selected && is_context_highlight {
+            // Bright highlight for "Show in Context" row
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(80, 130, 40, 200));
+        } else if is_selected {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(40, 60, 90, 180));
         } else if is_current_find {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(30, 80, 50, 160));

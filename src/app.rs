@@ -54,6 +54,9 @@ pub struct JlogApp {
     find: FindState,
 
     show_help: bool,
+
+    /// Saved filter bar state for "Show in Context" feature
+    saved_filter_bar: Option<FilterBar>,
 }
 
 impl JlogApp {
@@ -100,6 +103,8 @@ impl JlogApp {
             },
 
             show_help: false,
+
+            saved_filter_bar: None,
         }
     }
 
@@ -642,6 +647,40 @@ impl eframe::App for JlogApp {
             self.connection_dialog.open = true;
         }
 
+        // Handle "Show in Context" request (before rendering panels so data is ready this frame)
+        if self.log_viewer.show_in_context_requested {
+            self.log_viewer.show_in_context_requested = false;
+            if let Some(entry_idx) = self.log_viewer.selected_entry {
+                self.saved_filter_bar = Some(self.filter_bar.clone());
+                self.filter_bar = FilterBar::default();
+                self.filter = FilterCriteria::default();
+                self.apply_filter();
+                // Find the row index of entry_idx in the now-unfiltered list
+                if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
+                    self.log_viewer.scroll_to_row = Some(row);
+                }
+            }
+        }
+
+        // "Filters temporarily cleared" banner
+        if self.saved_filter_bar.is_some() {
+            egui::TopBottomPanel::top("context_banner").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 200, 60),
+                        "Filters temporarily cleared — showing all logs",
+                    );
+                    if ui.button("Restore Filters").clicked() {
+                        if let Some(saved) = self.saved_filter_bar.take() {
+                            self.filter_bar = saved;
+                            self.filter_bar.apply_to_filter(&mut self.filter);
+                            self.apply_filter();
+                        }
+                    }
+                });
+            });
+        }
+
         // Central log viewer
         let find_pattern = self.find.regex.as_ref();
         let current_find_row = if self.find.active && !self.find.match_indices.is_empty() {
@@ -649,8 +688,10 @@ impl eframe::App for JlogApp {
         } else {
             None
         };
+        let show_context_button = self.saved_filter_bar.is_none() && self.filter_bar.is_active();
+        let in_context_mode = self.saved_filter_bar.is_some();
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row);
+            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row, show_context_button, in_context_mode);
         });
     }
 }
