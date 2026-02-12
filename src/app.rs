@@ -288,6 +288,12 @@ impl JlogApp {
 }
 
 impl eframe::App for JlogApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
+            self.save_now();
+        }
+    }
+
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         // Use exact egui panel background to prevent artifacts on resize/maximize
         let c = visuals.panel_fill;
