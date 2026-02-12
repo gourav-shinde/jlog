@@ -12,6 +12,16 @@ fn priority_color(priority: u8) -> egui::Color32 {
     }
 }
 
+fn format_entry_for_copy(entry: &LogEntry) -> String {
+    format!(
+        "{} {}[{}]: {}",
+        entry.timestamp,
+        entry.service,
+        priority_label(entry.priority),
+        entry.message,
+    )
+}
+
 fn priority_label(priority: u8) -> &'static str {
     match priority {
         0 => "EMERG",
@@ -74,6 +84,15 @@ impl LogViewer {
         find_pattern: Option<&regex::Regex>,
         current_find_row: Option<usize>,
     ) {
+        // Ctrl+C: copy selected entry to clipboard
+        if ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
+            if let Some(idx) = self.selected_entry {
+                if let Some(entry) = store.entries.get(idx) {
+                    ui.ctx().copy_text(format_entry_for_copy(entry));
+                }
+            }
+        }
+
         let row_height = 18.0;
         let total_rows = filtered_indices.len();
 
@@ -213,6 +232,12 @@ impl LogViewer {
                         if resp.clicked() {
                             new_selection = if is_selected { None } else { Some(entry_idx) };
                         }
+                        resp.context_menu(|ui| {
+                            if ui.button("Copy Line").clicked() {
+                                ui.ctx().copy_text(format_entry_for_copy(entry));
+                                ui.close_menu();
+                            }
+                        });
                     }
                 });
 

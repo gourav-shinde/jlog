@@ -356,6 +356,14 @@ impl eframe::App for JlogApp {
                             ui.monospace("Shift+Enter / Shift+F3");
                             ui.label("Previous find match");
                             ui.end_row();
+
+                            ui.monospace("Ctrl+C");
+                            ui.label("Copy selected log line");
+                            ui.end_row();
+
+                            ui.monospace("Right-click");
+                            ui.label("Copy menu");
+                            ui.end_row();
                         });
 
                     ui.add_space(12.0);
