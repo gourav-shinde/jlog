@@ -7,7 +7,8 @@
 - **Timestamp range filter** — filter entries between two timestamps (useful for narrowing down incidents)
 
 ## Quality of Life
-- **Copy row/selection** — right-click or Ctrl+C to copy a log line or selected lines to clipboard
+- ~~**Copy row/selection** — right-click or Ctrl+C to copy a log line or selected lines to clipboard~~ **DONE**
+- ~~**Show in Context** — temporarily clear filters to see surrounding log lines around a filtered entry, with one-click filter restore~~ **DONE**
 - **Column resizing** — draggable column widths instead of fixed widths
 - ~~**Row detail panel** — click a row to expand full message in a bottom panel (alternative to horizontal scrolling for very long messages)~~ **DONE**
 - **Persistent settings** — save/load save settings, ~~connection profiles (including passwords)~~, and UI preferences to a config file (`~/.config/jlog/config.json`)
