@@ -25,7 +25,7 @@ impl Default for SaveSettings {
         Self {
             destination: dest.to_string_lossy().to_string(),
             filename_template: "{host}_{date}_{time}".to_string(),
-            format: SaveFormat::Json,
+            format: SaveFormat::PlainText,
             auto_save: true,
             save_filtered_only: false,
         }
