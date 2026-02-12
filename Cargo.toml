@@ -2,6 +2,7 @@
 name = "jlog"
 version = "0.2.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 eframe = "0.31"
