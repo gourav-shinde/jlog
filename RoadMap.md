@@ -12,6 +12,9 @@
 - ~~**Row detail panel** — click a row to expand full message in a bottom panel (alternative to horizontal scrolling for very long messages)~~ **DONE**
 - **Persistent settings** — save/load save settings, ~~connection profiles (including passwords)~~, and UI preferences to a config file (`~/.config/jlog/config.json`)
 
+## Performance
+- **Streaming save / memory cap** — for very long SSH sessions, periodically flush entries to disk and cap in-memory buffer to avoid unbounded memory growth (current approach is fine for ~50K entries)
+
 ## Power User
 - **Multiple SSH connections** — tabs for different hosts, view side-by-side
 - **Log correlation** — highlight entries within N seconds of a selected entry across services
