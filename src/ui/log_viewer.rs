@@ -1,7 +1,7 @@
 use eframe::egui;
 use crate::analyzer::{LogStore, LogEntry, FilterCriteria};
 
-fn priority_color(priority: u8) -> egui::Color32 {
+pub fn priority_color(priority: u8) -> egui::Color32 {
     match priority {
         0..=2 => egui::Color32::from_rgb(255, 80, 80),   // crit/alert/emerg - red
         3 => egui::Color32::from_rgb(255, 100, 100),       // error - lighter red
@@ -22,7 +22,7 @@ fn format_entry_for_copy(entry: &LogEntry) -> String {
     )
 }
 
-fn priority_label(priority: u8) -> &'static str {
+pub fn priority_label(priority: u8) -> &'static str {
     match priority {
         0 => "EMERG",
         1 => "ALERT",
@@ -46,6 +46,8 @@ pub struct LogViewer {
     pub scroll_to_row: Option<usize>,
     /// Set to true when "Show in Context" is clicked; consumed by app.
     pub show_in_context_requested: bool,
+    /// Entry index to toggle bookmark for; consumed by app.
+    pub toggle_bookmark_requested: Option<usize>,
 }
 
 impl Default for LogViewer {
@@ -57,6 +59,7 @@ impl Default for LogViewer {
             is_at_bottom: true,
             scroll_to_row: None,
             show_in_context_requested: false,
+            toggle_bookmark_requested: None,
         }
     }
 }
@@ -88,6 +91,7 @@ impl LogViewer {
         current_find_row: Option<usize>,
         show_context_button: bool,
         in_context_mode: bool,
+        bookmarks: &std::collections::HashSet<usize>,
     ) {
         // Ctrl+C: copy selected entry to clipboard
         if ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
@@ -95,6 +99,14 @@ impl LogViewer {
                 if let Some(entry) = store.entries.get(idx) {
                     ui.ctx().copy_text(format_entry_for_copy(entry));
                 }
+            }
+        }
+
+        // B key: toggle bookmark on selected entry (only when no text widget is focused)
+        let no_text_focus = !ui.ctx().memory(|m| m.focused().is_some());
+        if no_text_focus && ui.ctx().input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::B)) {
+            if let Some(idx) = self.selected_entry {
+                self.toggle_bookmark_requested = Some(idx);
             }
         }
 
@@ -232,6 +244,7 @@ impl LogViewer {
 
                 let selected = self.selected_entry;
                 let mut new_selection = self.selected_entry;
+                let mut bookmark_toggle: Option<usize> = None;
 
                 let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
@@ -239,20 +252,30 @@ impl LogViewer {
                         let entry = &store.entries[entry_idx];
                         let is_selected = selected == Some(entry_idx);
                         let is_current_find = current_find_row == Some(row_idx);
+                        let is_bookmarked = bookmarks.contains(&entry_idx);
 
                         let is_context_highlight = in_context_mode && is_selected;
-                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find, is_context_highlight);
+                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find, is_context_highlight, is_bookmarked);
                         if resp.clicked() {
                             new_selection = if is_selected { None } else { Some(entry_idx) };
                         }
+                        let bookmark_label = if is_bookmarked { "Remove Bookmark" } else { "Bookmark" };
                         resp.context_menu(|ui| {
                             if ui.button("Copy Line").clicked() {
                                 ui.ctx().copy_text(format_entry_for_copy(entry));
                                 ui.close_menu();
                             }
+                            if ui.button(bookmark_label).clicked() {
+                                bookmark_toggle = Some(entry_idx);
+                                ui.close_menu();
+                            }
                         });
                     }
                 });
+
+                if let Some(idx) = bookmark_toggle {
+                    self.toggle_bookmark_requested = Some(idx);
+                }
 
                 // Detect if scrolled to bottom
                 let threshold = 5.0;
@@ -306,15 +329,21 @@ impl LogViewer {
         find_pattern: Option<&regex::Regex>,
         is_current_find: bool,
         is_context_highlight: bool,
+        is_bookmarked: bool,
     ) -> egui::Response {
         let pri_color = priority_color(entry.priority);
         let widths = [60.0, 160.0, 60.0, 150.0];
 
         let row_resp = ui.horizontal(|ui| {
+            let (line_text, line_color) = if is_bookmarked {
+                (format!("\u{2605}{}", entry.line_num), egui::Color32::from_rgb(255, 200, 50))
+            } else {
+                (format!("{}", entry.line_num), egui::Color32::from_rgb(120, 120, 120))
+            };
             ui.add_sized([widths[0], row_height], egui::Label::new(
-                egui::RichText::new(format!("{}", entry.line_num))
+                egui::RichText::new(line_text)
                     .monospace()
-                    .color(egui::Color32::from_rgb(120, 120, 120)),
+                    .color(line_color),
             ));
 
             ui.add_sized([widths[1], row_height], egui::Label::new(
@@ -432,6 +461,8 @@ impl LogViewer {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(40, 60, 90, 180));
         } else if is_current_find {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(30, 80, 50, 160));
+        } else if is_bookmarked {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(80, 65, 10, 80));
         } else if response.hovered() {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(50, 50, 65, 120));
         }

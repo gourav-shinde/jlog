@@ -1,12 +1,13 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
 use regex::Regex;
+use std::collections::HashSet;
 
 use crate::analyzer::{LogStore, FilterCriteria};
 use crate::background::{BackgroundMessage, BackgroundCommand};
 use crate::ui::connection_dialog::ConnectionDialog;
 use crate::ui::filter_bar::FilterBar;
-use crate::ui::log_viewer::LogViewer;
+use crate::ui::log_viewer::{LogViewer, priority_label, priority_color};
 use crate::ui::open_file_dialog::OpenFileDialog;
 use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
 use crate::workers::{file_reader, log_writer, ssh_reader};
@@ -57,6 +58,11 @@ pub struct JlogApp {
 
     /// Saved filter bar state for "Show in Context" feature
     saved_filter_bar: Option<FilterBar>,
+
+    /// Bookmarked entry indices (for timeline view)
+    bookmarks: HashSet<usize>,
+    /// Whether the bookmark/timeline window is open
+    show_bookmarks: bool,
 }
 
 impl JlogApp {
@@ -105,6 +111,9 @@ impl JlogApp {
             show_help: false,
 
             saved_filter_bar: None,
+
+            bookmarks: HashSet::new(),
+            show_bookmarks: false,
         }
     }
 
@@ -366,8 +375,16 @@ impl eframe::App for JlogApp {
                             ui.label("Copy selected log line");
                             ui.end_row();
 
+                            ui.monospace("B");
+                            ui.label("Bookmark / unbookmark selected entry");
+                            ui.end_row();
+
+                            ui.monospace("Ctrl+B");
+                            ui.label("Toggle bookmark timeline window");
+                            ui.end_row();
+
                             ui.monospace("Right-click");
-                            ui.label("Copy menu");
+                            ui.label("Copy / bookmark menu");
                             ui.end_row();
                         });
 
@@ -439,6 +456,12 @@ impl eframe::App for JlogApp {
 
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.log_viewer.auto_scroll, "Auto-scroll");
+                    ui.separator();
+                    let bookmark_label = format!("Bookmarks ({})...", self.bookmarks.len());
+                    if ui.button(bookmark_label).clicked() {
+                        self.show_bookmarks = true;
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("Help", |ui| {
@@ -462,6 +485,20 @@ impl eframe::App for JlogApp {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.find.active = true;
             self.find.request_focus = true;
+        }
+
+        // Keyboard shortcut: Ctrl+B to toggle bookmark window
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::B)) {
+            self.show_bookmarks = !self.show_bookmarks;
+        }
+
+        // Handle bookmark toggle request from log viewer
+        if let Some(entry_idx) = self.log_viewer.toggle_bookmark_requested.take() {
+            if self.bookmarks.contains(&entry_idx) {
+                self.bookmarks.remove(&entry_idx);
+            } else {
+                self.bookmarks.insert(entry_idx);
+            }
         }
 
         // Find bar shortcuts (only when active)
@@ -681,6 +718,129 @@ impl eframe::App for JlogApp {
             });
         }
 
+        // Bookmark / timeline window
+        if self.show_bookmarks {
+            let mut open = self.show_bookmarks;
+            let bookmark_count = self.bookmarks.len();
+            let title = format!("Bookmarks ({}) \u{2014} Timeline", bookmark_count);
+            let mut remove_idx: Option<usize> = None;
+            let mut navigate_idx: Option<usize> = None;
+
+            egui::Window::new(title)
+                .open(&mut open)
+                .resizable(true)
+                .default_size([760.0, 420.0])
+                .show(ctx, |ui| {
+                    if self.bookmarks.is_empty() {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("No bookmarks yet.\nRight-click a log entry or press B to bookmark.");
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            if ui.button("Clear All").clicked() {
+                                self.bookmarks.clear();
+                            }
+                            ui.label(egui::RichText::new(format!("{} bookmarks — click a row to navigate", bookmark_count))
+                                .color(egui::Color32::from_rgb(160, 160, 160)));
+                        });
+                        ui.separator();
+
+                        // Header
+                        ui.horizontal(|ui| {
+                            ui.add_sized([55.0, 16.0], egui::Label::new(egui::RichText::new("Line#").strong().monospace()));
+                            ui.add_sized([160.0, 16.0], egui::Label::new(egui::RichText::new("Timestamp").strong().monospace()));
+                            ui.add_sized([55.0, 16.0], egui::Label::new(egui::RichText::new("Pri").strong().monospace()));
+                            ui.add_sized([140.0, 16.0], egui::Label::new(egui::RichText::new("Service").strong().monospace()));
+                            ui.label(egui::RichText::new("Message").strong().monospace());
+                        });
+                        ui.separator();
+
+                        let mut sorted: Vec<usize> = self.bookmarks.iter().copied().collect();
+                        sorted.sort();
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for &entry_idx in &sorted {
+                                if let Some(entry) = self.log_store.entries.get(entry_idx) {
+                                    let row = ui.horizontal(|ui| {
+                                        ui.add_sized([55.0, 18.0], egui::Label::new(
+                                            egui::RichText::new(format!("\u{2605}{}", entry.line_num))
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(255, 200, 50)),
+                                        ));
+                                        ui.add_sized([160.0, 18.0], egui::Label::new(
+                                            egui::RichText::new(&entry.timestamp)
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(180, 180, 180)),
+                                        ));
+                                        ui.add_sized([55.0, 18.0], egui::Label::new(
+                                            egui::RichText::new(priority_label(entry.priority))
+                                                .monospace()
+                                                .color(priority_color(entry.priority)),
+                                        ));
+                                        ui.add_sized([140.0, 18.0], egui::Label::new(
+                                            egui::RichText::new(&entry.service)
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(130, 200, 255)),
+                                        ));
+                                        // Truncate message safely at char boundary
+                                        let msg = {
+                                            let limit = 80;
+                                            if entry.message.len() > limit {
+                                                let end = entry.message.char_indices()
+                                                    .map(|(i, _)| i)
+                                                    .nth(limit)
+                                                    .unwrap_or(entry.message.len());
+                                                format!("{}…", &entry.message[..end])
+                                            } else {
+                                                entry.message.clone()
+                                            }
+                                        };
+                                        let msg_resp = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(msg)
+                                                    .monospace()
+                                                    .color(egui::Color32::from_rgb(220, 220, 220)),
+                                            )
+                                            .sense(egui::Sense::click())
+                                            .truncate(),
+                                        );
+                                        if msg_resp.clicked() {
+                                            navigate_idx = Some(entry_idx);
+                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.small_button("\u{2715}").clicked() {
+                                                remove_idx = Some(entry_idx);
+                                            }
+                                        });
+                                    });
+                                    let row_rect = row.response.rect;
+                                    let row_resp = ui.interact(row_rect, ui.id().with(("bm_row", entry_idx)), egui::Sense::click());
+                                    if row_resp.clicked() {
+                                        navigate_idx = Some(entry_idx);
+                                    }
+                                    if row_resp.hovered() {
+                                        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(50, 50, 65, 100));
+                                    }
+                                    ui.separator();
+                                }
+                            }
+                        });
+                    }
+                });
+
+            self.show_bookmarks = open;
+
+            if let Some(idx) = remove_idx {
+                self.bookmarks.remove(&idx);
+            }
+            if let Some(entry_idx) = navigate_idx {
+                self.log_viewer.selected_entry = Some(entry_idx);
+                if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
+                    self.log_viewer.scroll_to_row = Some(row);
+                }
+            }
+        }
+
         // Central log viewer
         let find_pattern = self.find.regex.as_ref();
         let current_find_row = if self.find.active && !self.find.match_indices.is_empty() {
@@ -691,7 +851,7 @@ impl eframe::App for JlogApp {
         let show_context_button = self.saved_filter_bar.is_none() && self.filter_bar.is_active();
         let in_context_mode = self.saved_filter_bar.is_some();
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row, show_context_button, in_context_mode);
+            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row, show_context_button, in_context_mode, &self.bookmarks);
         });
     }
 }
