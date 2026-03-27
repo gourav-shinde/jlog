@@ -3,7 +3,17 @@
 ## High Value
 - ~~**Search within messages** — Ctrl+F to jump between matches (different from the filter, which hides non-matching lines)~~ **DONE**
 - ~~**Log tailing indicator** — visual indicator showing new lines arriving, with a "jump to bottom" button when auto-scroll is off~~ **DONE**
-- **Bookmarks/pinning** — mark interesting log lines to revisit them quickly
+- ~~**Bookmarks/pinning** — mark interesting log lines to revisit them quickly~~ **DONE** (B key / right-click to bookmark, Ctrl+B timeline window, gold ★ indicator)
+
+### Bookmark refinements
+- **Notes per bookmark** — annotate each bookmark with a short label (e.g. "first OOM error", "service restart"), shown in the timeline window
+- **Keyboard navigation between bookmarks** — `]` / `[` to jump to next/previous bookmark from the main log view
+- **"Show bookmarks only" filter** — one-click toggle to isolate bookmarked entries in the main view
+- **Export timeline** — save bookmarked entries to a text/JSON file from the timeline window
+- **Timestamp gap display** — show time delta between consecutive bookmarks in the timeline (e.g. "+2m 14s")
+- **Navigate when filtered out** — clicking a bookmark that is hidden by filters should show it in context or give a tooltip instead of silently doing nothing
+- **Bookmark count in status bar** — small `★N` indicator next to the entry count
+- **Fix double hit area** — timeline rows have two overlapping click responders (message label + row rect)
 - **Timestamp range filter** — filter entries between two timestamps (useful for narrowing down incidents)
 
 ## Quality of Life
