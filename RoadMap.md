@@ -25,6 +25,9 @@
 
 ## Performance
 - **Streaming save / memory cap** — for very long SSH sessions, periodically flush entries to disk and cap in-memory buffer to avoid unbounded memory growth (current approach is fine for ~50K entries)
+- **Idle repaint rate** — `ctx.request_repaint()` runs unconditionally at ~60fps even when nothing is happening; use `request_repaint_after(100ms)` when not streaming/loading to reduce idle CPU usage
+- **Cache regex highlight LayoutJobs** — `render_row` allocates a `vec![0u8; msg_len]` for every visible row every frame; caching `LayoutJob` per `(entry_idx, filter_hash, find_hash)` would eliminate most of this churn
+- **`service_names()` clones on every frame** — `BTreeSet::iter().cloned().collect()` runs each frame inside the filter bar; cache the `Vec<String>` and only rebuild when the services set changes
 
 ## Power User
 - **Multiple SSH connections** — tabs for different hosts, view side-by-side
