@@ -366,9 +366,11 @@ impl eframe::App for JlogApp {
             let mut open = self.show_help;
             egui::Window::new("Shortcuts & About")
                 .open(&mut open)
-                .resizable(false)
+                .resizable(true)
                 .collapsible(false)
+                .default_width(480.0)
                 .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Keyboard Shortcuts");
                     egui::Grid::new("shortcuts_grid")
                         .striped(true)
@@ -415,6 +417,64 @@ impl eframe::App for JlogApp {
                     ui.separator();
                     ui.add_space(4.0);
 
+                    ui.heading("Regex Filter Reference");
+                    ui.add_space(4.0);
+                    ui.label("The filter fields accept full Rust regex syntax.");
+                    ui.add_space(6.0);
+
+                    egui::Grid::new("regex_grid")
+                        .striped(true)
+                        .spacing([20.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.strong("Pattern");
+                            ui.strong("Matches");
+                            ui.end_row();
+
+                            ui.monospace("error");
+                            ui.label("Lines containing \"error\"");
+                            ui.end_row();
+
+                            ui.monospace("error|warning");
+                            ui.label("Lines containing \"error\" OR \"warning\"");
+                            ui.end_row();
+
+                            ui.monospace("foo.*bar");
+                            ui.label("\"foo\" followed by anything then \"bar\"");
+                            ui.end_row();
+
+                            ui.monospace("^kernel:");
+                            ui.label("Lines starting with \"kernel:\"");
+                            ui.end_row();
+
+                            ui.monospace("timeout$");
+                            ui.label("Lines ending with \"timeout\"");
+                            ui.end_row();
+
+                            ui.monospace("\\d+");
+                            ui.label("One or more digits");
+                            ui.end_row();
+
+                            ui.monospace("[Ee]rror");
+                            ui.label("\"Error\" or \"error\"");
+                            ui.end_row();
+
+                            ui.monospace("(?i)error");
+                            ui.label("Case-insensitive match for \"error\"");
+                            ui.end_row();
+
+                            ui.monospace("failed (to|with)");
+                            ui.label("\"failed to\" or \"failed with\"");
+                            ui.end_row();
+                        });
+
+                    ui.add_space(6.0);
+                    ui.label("Use the AND / OR / NOT combine mode to apply a second pattern.");
+                    ui.label("NOT mode hides lines that match the pattern.");
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
                     ui.heading("About");
                     ui.label(format!("jlog v{}", env!("CARGO_PKG_VERSION")));
                     ui.label("A JSON log viewer and analyzer.");
@@ -423,6 +483,7 @@ impl eframe::App for JlogApp {
                     if ui.button("Close").clicked() {
                         self.show_help = false;
                     }
+                    }); // ScrollArea
                 });
             self.show_help = open;
         }
