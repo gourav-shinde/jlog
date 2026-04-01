@@ -75,11 +75,12 @@ fn parse_syslog_timestamp(ts: &str) -> Option<i64> {
     let year = now.format("%Y").to_string();
     let full_ts = format!("{} {}", year, ts);
 
+    // Treat as UTC so the display (also UTC) preserves the exact time written in the log.
+    // Syslog lines carry no per-line timezone, so converting via local timezone would shift
+    // the displayed time by the viewer's UTC offset.
     chrono::NaiveDateTime::parse_from_str(&full_ts, "%Y %b %d %H:%M:%S")
         .ok()
-        .map(|dt| dt.and_local_timezone(chrono::Local).single())
-        .flatten()
-        .map(|dt| dt.timestamp())
+        .map(|dt| dt.and_utc().timestamp())
 }
 
 fn infer_priority(msg: &str) -> u8 {
