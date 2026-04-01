@@ -41,6 +41,28 @@ fn save_profiles(profiles: &[ConnectionProfile]) {
     }
 }
 
+pub fn config_for_profile(name: &str) -> Option<crate::workers::ssh_reader::SshConfig> {
+    let profile = load_profiles().into_iter().find(|p| p.name == name)?;
+    let auth = match profile.auth_choice {
+        0 => {
+            let password = BASE64.decode(&profile.password)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
+            crate::workers::ssh_reader::AuthMethod::Password(password)
+        }
+        1 => crate::workers::ssh_reader::AuthMethod::KeyFile(std::path::PathBuf::from(&profile.key_path)),
+        _ => crate::workers::ssh_reader::AuthMethod::Agent,
+    };
+    Some(crate::workers::ssh_reader::SshConfig {
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        auth,
+        command: profile.command,
+    })
+}
+
 pub struct ConnectionDialog {
     pub open: bool,
     pub host: String,

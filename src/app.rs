@@ -52,6 +52,9 @@ pub struct JlogApp {
     /// File to load on first frame (from CLI argument)
     pending_file: Option<String>,
 
+    /// SSH profile name to connect on first frame (from CLI --profile/-p argument)
+    pending_ssh_profile: Option<String>,
+
     find: FindState,
 
     show_help: bool,
@@ -67,11 +70,20 @@ pub struct JlogApp {
 
 impl JlogApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Check for CLI argument: jlog <file>
-        let pending_file = std::env::args().nth(1).filter(|p| {
-            let path = std::path::Path::new(p);
-            path.exists() && path.is_file()
-        });
+        // Parse CLI arguments: jlog [<file>] [--profile|-p <name>]
+        let mut args = std::env::args().skip(1);
+        let mut pending_file = None;
+        let mut pending_ssh_profile = None;
+        while let Some(arg) = args.next() {
+            if arg == "--profile" || arg == "-p" {
+                pending_ssh_profile = args.next();
+            } else if pending_file.is_none() {
+                let path = std::path::Path::new(&arg);
+                if path.exists() && path.is_file() {
+                    pending_file = Some(arg);
+                }
+            }
+        }
 
         Self {
             log_store: LogStore::new(),
@@ -98,6 +110,8 @@ impl JlogApp {
             last_ssh_config: None,
 
             pending_file,
+
+            pending_ssh_profile,
 
             find: FindState {
                 active: false,
@@ -321,6 +335,15 @@ impl eframe::App for JlogApp {
         // Load file from CLI argument on first frame
         if let Some(path) = self.pending_file.take() {
             self.load_file(path);
+        }
+
+        // Connect to SSH profile from CLI argument on first frame
+        if let Some(name) = self.pending_ssh_profile.take() {
+            if let Some(config) = crate::ui::connection_dialog::config_for_profile(&name) {
+                self.start_ssh(config);
+            } else {
+                self.status_message = format!("SSH profile '{}' not found", name);
+            }
         }
 
         // Poll background messages

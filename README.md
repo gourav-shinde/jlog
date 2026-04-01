@@ -13,12 +13,18 @@ cargo build --release
 ## Usage
 
 ```bash
-# Launch with a file
+# Launch empty, then use File > Open File or SSH > Connect SSH
+./target/release/jlog
+
+# Open a log file directly
 ./target/release/jlog path/to/logfile.log
 
-# Launch empty, then use File > Open File or File > Connect SSH
-./target/release/jlog
+# Connect to a saved SSH profile directly
+./target/release/jlog --profile "myserver"
+./target/release/jlog -p myserver
 ```
+
+SSH profiles are managed via SSH > Connect SSH and saved to `~/.config/jlog/profiles.json`.
 
 On WSL2, the app uses X11 by default. Override with `WINIT_UNIX_BACKEND=wayland` if needed.
 
