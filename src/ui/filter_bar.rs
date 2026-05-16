@@ -9,6 +9,7 @@ pub struct FilterBar {
     pub pattern_valid: bool,
     pub pattern2_valid: bool,
     pub selected_services: HashSet<String>,
+    pub service_search: String,   // autocomplete input text
     pub priority_choice: usize,   // index into PRIORITY_LABELS
     pub combine_mode: CombineMode,
 }
@@ -50,6 +51,7 @@ impl Default for FilterBar {
             pattern_valid: true,
             pattern2_valid: true,
             selected_services: HashSet::new(),
+            service_search: String::new(),
             priority_choice: 0,
             combine_mode: CombineMode::Match,
         }
@@ -135,37 +137,62 @@ impl FilterBar {
 
             ui.separator();
 
-            // Service multi-select
+            // Service filter with autocomplete
             ui.label("Service:");
-            let label = if self.selected_services.is_empty() {
-                "All".to_string()
-            } else if self.selected_services.len() == 1 {
-                self.selected_services.iter().next().unwrap().clone()
+
+            let hint = if self.selected_services.is_empty() {
+                "all services...".to_string()
             } else {
                 format!("{} selected", self.selected_services.len())
             };
-            egui::ComboBox::from_id_salt("service_filter")
-                .selected_text(&label)
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.selected_services.is_empty(), "All").clicked() {
-                        self.selected_services.clear();
-                        filter.units.clear();
-                        changed = true;
-                    }
-                    for svc in services {
-                        let mut selected = self.selected_services.contains(svc);
-                        if ui.checkbox(&mut selected, svc).changed() {
-                            if selected {
-                                self.selected_services.insert(svc.clone());
-                            } else {
-                                self.selected_services.remove(svc);
-                            }
-                            filter.units = self.selected_services.clone();
+
+            let svc_resp = ui.add(
+                egui::TextEdit::singleline(&mut self.service_search)
+                    .desired_width(160.0)
+                    .hint_text(hint),
+            );
+
+            let popup_id = ui.make_persistent_id("svc_autocomplete");
+
+            if svc_resp.gained_focus() || svc_resp.changed() {
+                ui.memory_mut(|m| m.open_popup(popup_id));
+            }
+
+            egui::popup_below_widget(
+                ui,
+                popup_id,
+                &svc_resp,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(220.0);
+                    let search = self.service_search.to_lowercase();
+                    let matches: Vec<&String> = services
+                        .iter()
+                        .filter(|s| search.is_empty() || s.to_lowercase().contains(&search))
+                        .collect();
+
+                    egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+                        if ui.selectable_label(self.selected_services.is_empty(), "All").clicked() {
+                            self.selected_services.clear();
+                            filter.units.clear();
+                            self.service_search.clear();
                             changed = true;
                         }
-                    }
-                });
+                        for svc in matches {
+                            let mut is_selected = self.selected_services.contains(svc);
+                            if ui.checkbox(&mut is_selected, svc.as_str()).changed() {
+                                if is_selected {
+                                    self.selected_services.insert(svc.clone());
+                                } else {
+                                    self.selected_services.remove(svc);
+                                }
+                                filter.units = self.selected_services.clone();
+                                changed = true;
+                            }
+                        }
+                    });
+                },
+            );
 
             // Priority combo
             ui.label("Priority:");
@@ -196,6 +223,7 @@ impl FilterBar {
                 self.pattern_text.clear();
                 self.pattern2_text.clear();
                 self.selected_services.clear();
+                self.service_search.clear();
                 self.priority_choice = 0;
                 self.combine_mode = CombineMode::Match;
                 *filter = FilterCriteria::default();
