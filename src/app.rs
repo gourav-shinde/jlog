@@ -153,8 +153,13 @@ pub struct App {
 
     // Find
     pub find_text: String,
-    pub find_matches: Vec<usize>,
+    pub find_regex: Option<regex::Regex>,  // cached, avoids recompile on every keypress
+    pub find_matches: Vec<usize>,          // ordered row indices for navigation
+    pub find_match_set: HashSet<usize>,    // same data, O(1) lookup in draw loop
     pub find_current: usize,
+
+    // Incremental filter — how many entries have already been processed
+    filtered_up_to: usize,
 
     // Connection form
     pub conn: ConnectForm,
@@ -194,8 +199,11 @@ impl App {
             mode: Mode::Normal,
             filter_text: String::new(),
             find_text: String::new(),
+            find_regex: None,
             find_matches: Vec::new(),
+            find_match_set: HashSet::new(),
             find_current: 0,
+            filtered_up_to: 0,
             conn: ConnectForm::default(),
             bookmark_offset: 0,
             bookmark_selected: 0,
@@ -336,18 +344,20 @@ impl App {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.find_text.clear();
+                self.find_regex = None;
                 self.find_matches.clear();
+                self.find_match_set.clear();
                 self.status = String::new();
             }
             KeyCode::Enter | KeyCode::Down | KeyCode::Char('n') => self.find_next(),
             KeyCode::Up    | KeyCode::Char('N') => self.find_prev(),
             KeyCode::Backspace => {
                 self.find_text.pop();
-                self.update_find_matches();
+                self.recompile_find_regex();
             }
             KeyCode::Char(c) => {
                 self.find_text.push(c);
-                self.update_find_matches();
+                self.recompile_find_regex();
             }
             _ => {}
         }
@@ -548,19 +558,33 @@ impl App {
 
     // --- Find ---
 
+    /// Recompile the find regex when search text changes.
+    pub fn recompile_find_regex(&mut self) {
+        if self.find_text.is_empty() {
+            self.find_regex = None;
+        } else {
+            self.find_regex = regex::RegexBuilder::new(&regex::escape(&self.find_text))
+                .case_insensitive(true)
+                .build()
+                .ok();
+        }
+        self.update_find_matches();
+    }
+
+    /// Rebuild match list using the already-compiled regex.
     pub fn update_find_matches(&mut self) {
         self.find_matches.clear();
+        self.find_match_set.clear();
         self.find_current = 0;
-        if self.find_text.is_empty() { return; }
-        if let Ok(re) = regex::RegexBuilder::new(&regex::escape(&self.find_text))
-            .case_insensitive(true)
-            .build()
-        {
-            for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
-                if let Some(entry) = self.log_store.entries.get(entry_idx) {
-                    if re.is_match(&entry.message) {
-                        self.find_matches.push(row_idx);
-                    }
+        let re = match &self.find_regex {
+            Some(r) => r.clone(),
+            None => return,
+        };
+        for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
+            if let Some(entry) = self.log_store.entries.get(entry_idx) {
+                if re.is_match(&entry.message) {
+                    self.find_matches.push(row_idx);
+                    self.find_match_set.insert(row_idx);
                 }
             }
         }
@@ -586,17 +610,28 @@ impl App {
 
     // --- Filter ---
 
+    /// Full rebuild — call only when filter criteria changes.
     pub fn apply_filter(&mut self) {
         self.filtered_indices.clear();
+        self.filtered_up_to = 0;
+        self.extend_filter();
+        self.selected_row = self.selected_row.map(|r| r.min(self.filtered_indices.len().saturating_sub(1)));
+        if !self.find_text.is_empty() {
+            self.update_find_matches();
+        }
+    }
+
+    /// Incremental — only checks entries added since last call.
+    fn extend_filter(&mut self) {
         let pin = self.save_settings.always_show_bookmarks;
-        for (i, entry) in self.log_store.entries.iter().enumerate() {
+        let total = self.log_store.entries.len();
+        for i in self.filtered_up_to..total {
+            let entry = &self.log_store.entries[i];
             if self.filter.matches(entry) || (pin && self.bookmarks.contains(&i)) {
                 self.filtered_indices.push(i);
             }
         }
-        self.selected_row = self.selected_row.map(|r| r.min(self.filtered_indices.len().saturating_sub(1)));
-        if self.find_text.is_empty() { return; }
-        self.update_find_matches();
+        self.filtered_up_to = total;
     }
 
     // --- Connection ---
@@ -658,7 +693,10 @@ impl App {
         self.filter_text.clear();
         self.filter = FilterCriteria::default();
         self.find_text.clear();
+        self.find_regex = None;
         self.find_matches.clear();
+        self.find_match_set.clear();
+        self.filtered_up_to = 0;
         self.bookmarks.clear();
     }
 
@@ -683,7 +721,7 @@ impl App {
         }
 
         if count > 0 {
-            self.apply_filter();
+            self.extend_filter();
             // Auto-scroll to bottom while loading
             if self.is_loading && self.selected_row.is_none() {
                 let len = self.filtered_indices.len();

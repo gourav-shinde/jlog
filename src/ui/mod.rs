@@ -106,7 +106,7 @@ fn draw_log_table(f: &mut Frame, app: &mut App, area: Rect) {
         let entry = &app.log_store.entries[entry_idx];
         let is_selected = app.selected_row == Some(row_idx);
         let is_bookmarked = app.bookmarks.contains(&entry_idx);
-        let is_find_match = app.find_matches.contains(&row_idx);
+        let is_find_match = app.find_match_set.contains(&row_idx);
 
         let bm_marker = if is_bookmarked { "★" } else { " " };
 
