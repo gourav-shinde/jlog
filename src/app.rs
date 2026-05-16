@@ -28,6 +28,7 @@ pub struct JlogApp {
     log_store: LogStore,
     filter: FilterCriteria,
     filtered_indices: Vec<usize>,
+    filtered_up_to: usize,
 
     open_file_dialog: OpenFileDialog,
     connection_dialog: ConnectionDialog,
@@ -99,6 +100,7 @@ impl JlogApp {
             log_store: LogStore::new(),
             filter: FilterCriteria::default(),
             filtered_indices: Vec::new(),
+            filtered_up_to: 0,
 
             open_file_dialog: OpenFileDialog::default(),
             connection_dialog: ConnectionDialog::default(),
@@ -183,6 +185,7 @@ impl JlogApp {
         }
         self.log_store = LogStore::new();
         self.filtered_indices.clear();
+        self.filtered_up_to = 0;
         self.bg_receiver = None;
         self.bg_cmd_sender = None;
         self.is_loading = false;
@@ -266,7 +269,7 @@ impl JlogApp {
         if new_entries {
             let new_count = self.log_store.entries.len() - entries_before;
             self.log_viewer.notify_new_entries(new_count);
-            self.apply_filter();
+            self.extend_filter();
         }
     }
 
@@ -317,16 +320,24 @@ impl JlogApp {
 
     fn apply_filter(&mut self) {
         self.filtered_indices.clear();
+        self.filtered_up_to = 0;
+        self.extend_filter();
+        if self.find.active {
+            self.update_find_matches();
+        }
+    }
+
+    /// Only checks entries added since the last filter pass.
+    fn extend_filter(&mut self) {
         let pin_bookmarks = self.save_settings.always_show_bookmarks;
-        for (i, entry) in self.log_store.entries.iter().enumerate() {
+        let total = self.log_store.entries.len();
+        for i in self.filtered_up_to..total {
+            let entry = &self.log_store.entries[i];
             if self.filter.matches(entry) || (pin_bookmarks && self.bookmarks.contains(&i)) {
                 self.filtered_indices.push(i);
             }
         }
-        // Re-scan find matches against updated filtered set
-        if self.find.active {
-            self.update_find_matches();
-        }
+        self.filtered_up_to = total;
     }
 }
 
