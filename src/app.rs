@@ -844,7 +844,7 @@ impl eframe::App for JlogApp {
                         let mut sorted: Vec<usize> = self.bookmarks.iter().copied().collect();
                         sorted.sort();
 
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::ScrollArea::both().show(ui, |ui| {
                             for &entry_idx in &sorted {
                                 if let Some(entry) = self.log_store.entries.get(entry_idx) {
                                     let row = ui.horizontal(|ui| {
@@ -868,27 +868,13 @@ impl eframe::App for JlogApp {
                                                 .monospace()
                                                 .color(egui::Color32::from_rgb(130, 200, 255)),
                                         ));
-                                        // Truncate message safely at char boundary
-                                        let msg = {
-                                            let limit = 80;
-                                            if entry.message.len() > limit {
-                                                let end = entry.message.char_indices()
-                                                    .map(|(i, _)| i)
-                                                    .nth(limit)
-                                                    .unwrap_or(entry.message.len());
-                                                format!("{}…", &entry.message[..end])
-                                            } else {
-                                                entry.message.clone()
-                                            }
-                                        };
                                         let msg_resp = ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(msg)
+                                                egui::RichText::new(&entry.message)
                                                     .monospace()
                                                     .color(egui::Color32::from_rgb(220, 220, 220)),
                                             )
-                                            .sense(egui::Sense::click())
-                                            .truncate(),
+                                            .sense(egui::Sense::click()),
                                         );
                                         if msg_resp.clicked() {
                                             navigate_idx = Some(entry_idx);
