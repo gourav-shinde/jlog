@@ -1,180 +1,646 @@
-use crossbeam_channel::{Receiver, Sender, unbounded};
-use eframe::egui;
-use regex::Regex;
 use std::collections::HashSet;
+use std::time::Duration;
+use crossbeam_channel::{Receiver, Sender};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::analyzer::{LogStore, FilterCriteria};
-use crate::background::{BackgroundMessage, BackgroundCommand};
-use crate::ui::connection_dialog::ConnectionDialog;
-use crate::ui::filter_bar::FilterBar;
-use crate::ui::log_viewer::{LogViewer, priority_label, priority_color};
-use crate::ui::open_file_dialog::OpenFileDialog;
-use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
-use crate::workers::{file_reader, log_writer, ssh_reader};
+use crate::analyzer::{filter::FilterCriteria, state::{LogEntry, LogStore}};
+use crate::background::{BackgroundCommand, BackgroundMessage};
+use crate::ui::profiles::{config_for_profile, ConnectionProfile, load_profiles, save_profiles};
+use crate::ui::save_settings::{load_settings, SaveSettings};
+use crate::workers::{file_reader, ssh_reader};
+use crate::workers::ssh_reader::{AuthMethod, SshConfig};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-struct FindState {
-    active: bool,
-    search_text: String,
-    regex: Option<Regex>,
-    /// Row indices into `filtered_indices` that match
-    match_indices: Vec<usize>,
-    /// Current match position within match_indices
-    current_match: usize,
-    /// Whether the find input should request focus this frame
-    request_focus: bool,
+#[derive(PartialEq)]
+pub enum Mode {
+    Normal,
+    Filter,
+    Find,
+    Connect,
+    Bookmarks,
+    Help,
 }
 
-pub struct JlogApp {
-    log_store: LogStore,
-    filter: FilterCriteria,
-    filtered_indices: Vec<usize>,
+pub struct ConnectForm {
+    pub host: String,
+    pub port: String,
+    pub username: String,
+    pub password: String,
+    pub key_path: String,
+    pub command: String,
+    pub auth_choice: usize,   // 0=password, 1=key, 2=agent
+    pub focused: usize,       // 0..=6 fields + buttons
+    pub profiles: Vec<ConnectionProfile>,
+    pub profile_idx: Option<usize>,
+    pub profile_name: String,
+    pub error: String,
+}
 
-    open_file_dialog: OpenFileDialog,
-    connection_dialog: ConnectionDialog,
-    filter_bar: FilterBar,
-    log_viewer: LogViewer,
+impl Default for ConnectForm {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: "22".to_string(),
+            username: String::new(),
+            password: String::new(),
+            key_path: String::new(),
+            command: "journalctl -o json --no-pager -n 10000 -f".to_string(),
+            auth_choice: 0,
+            focused: 0,
+            profiles: load_profiles(),
+            profile_idx: None,
+            profile_name: String::new(),
+            error: String::new(),
+        }
+    }
+}
 
+impl ConnectForm {
+    pub fn field_count(&self) -> usize {
+        // host, port, user, auth_choice, password/keypath, command, profile_name = 7 inputs + connect + save + cancel = 10
+        10
+    }
+
+    pub fn load_profile(&mut self, idx: usize) {
+        if let Some(p) = self.profiles.get(idx) {
+            self.host = p.host.clone();
+            self.port = p.port.to_string();
+            self.username = p.username.clone();
+            self.auth_choice = p.auth_choice;
+            self.key_path = p.key_path.clone();
+            self.command = p.command.clone();
+            self.password = BASE64.decode(&p.password)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .unwrap_or_default();
+            self.profile_name = p.name.clone();
+            self.profile_idx = Some(idx);
+        }
+    }
+
+    pub fn to_ssh_config(&self) -> Result<SshConfig, String> {
+        if self.host.is_empty() {
+            return Err("Host is required".to_string());
+        }
+        let port: u16 = self.port.parse().map_err(|_| "Invalid port".to_string())?;
+        let auth = match self.auth_choice {
+            0 => AuthMethod::Password(self.password.clone()),
+            1 => {
+                if self.key_path.is_empty() {
+                    return Err("Key path is required".to_string());
+                }
+                AuthMethod::KeyFile(std::path::PathBuf::from(&self.key_path))
+            }
+            _ => AuthMethod::Agent,
+        };
+        Ok(SshConfig {
+            host: self.host.clone(),
+            port,
+            username: self.username.clone(),
+            auth,
+            command: self.command.clone(),
+        })
+    }
+
+    pub fn save_current_profile(&mut self) {
+        if self.profile_name.is_empty() {
+            return;
+        }
+        let profile = ConnectionProfile {
+            name: self.profile_name.clone(),
+            host: self.host.clone(),
+            port: self.port.parse().unwrap_or(22),
+            username: self.username.clone(),
+            auth_choice: self.auth_choice,
+            key_path: self.key_path.clone(),
+            command: self.command.clone(),
+            password: BASE64.encode(self.password.as_bytes()),
+        };
+        if let Some(idx) = self.profiles.iter().position(|p| p.name == profile.name) {
+            self.profiles[idx] = profile;
+        } else {
+            self.profiles.push(profile);
+        }
+        save_profiles(&self.profiles);
+    }
+}
+
+pub struct App {
+    // Data
+    pub log_store: LogStore,
+    pub filter: FilterCriteria,
+    pub filtered_indices: Vec<usize>,
+    pub bookmarks: HashSet<usize>,
+
+    // Background
     bg_receiver: Option<Receiver<BackgroundMessage>>,
     bg_cmd_sender: Option<Sender<BackgroundCommand>>,
+    pub is_loading: bool,
+    pub is_connected: bool,
+    pub current_host: String,
+    last_ssh_config: Option<SshConfig>,
 
-    is_loading: bool,
-    is_connected: bool,
-    status_message: String,
-    total_lines: usize,
+    // Navigation
+    pub scroll_offset: usize,
+    pub selected_row: Option<usize>,
 
-    save_settings: SaveSettings,
-    save_settings_dialog: SaveSettingsDialog,
-    current_host: String,
+    // Mode
+    pub mode: Mode,
 
-    /// Last SSH config used (for reconnect)
-    last_ssh_config: Option<ssh_reader::SshConfig>,
+    // Filter input
+    pub filter_text: String,
 
-    /// File to load on first frame (from CLI argument)
+    // Find
+    pub find_text: String,
+    pub find_matches: Vec<usize>,
+    pub find_current: usize,
+
+    // Connection form
+    pub conn: ConnectForm,
+
+    // Bookmarks view
+    pub bookmark_offset: usize,
+    pub bookmark_selected: usize,
+
+    // Status
+    pub status: String,
+
+    // Settings
+    pub save_settings: SaveSettings,
+
+    // CLI
     pending_file: Option<String>,
-
-    /// SSH profile name to connect on first frame (from CLI --profile/-p argument)
     pending_ssh_profile: Option<String>,
 
-    find: FindState,
-
-    show_help: bool,
-
-    /// Saved filter bar state for "Show in Context" feature
-    saved_filter_bar: Option<FilterBar>,
-
-    /// Bookmarked entry indices (for timeline view)
-    bookmarks: HashSet<usize>,
-    /// Whether the bookmark/timeline window is open
-    show_bookmarks: bool,
+    pub should_quit: bool,
 }
 
-impl JlogApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Parse CLI arguments: jlog [<file>] [--profile|-p <name>]
-        let mut args = std::env::args().skip(1);
-        let mut pending_file = None;
-        let mut pending_ssh_profile = None;
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-h" | "--help" => {
-                    println!("Usage: jlog [OPTIONS]");
-                    println!();
-                    println!("Options:");
-                    println!("  -f, --file <PATH>       Open a log file directly");
-                    println!("  -p, --profile <NAME>    Connect using a saved SSH profile");
-                    println!("  -h, --help              Print this help message");
-                    std::process::exit(0);
-                }
-                "-f" | "--file" => {
-                    pending_file = args.next();
-                }
-                "-p" | "--profile" => {
-                    pending_ssh_profile = args.next();
-                }
-                _ => {}
-            }
-        }
-
+impl App {
+    pub fn new(pending_file: Option<String>, pending_ssh_profile: Option<String>) -> Self {
         Self {
             log_store: LogStore::new(),
             filter: FilterCriteria::default(),
             filtered_indices: Vec::new(),
-
-            open_file_dialog: OpenFileDialog::default(),
-            connection_dialog: ConnectionDialog::default(),
-            filter_bar: FilterBar::default(),
-            log_viewer: LogViewer::default(),
-
+            bookmarks: HashSet::new(),
             bg_receiver: None,
             bg_cmd_sender: None,
-
             is_loading: false,
             is_connected: false,
-            status_message: "Ready - File > Open or Connect SSH".to_string(),
-            total_lines: 0,
-
-            save_settings: load_settings(),
-            save_settings_dialog: SaveSettingsDialog::default(),
-            current_host: "local".to_string(),
-
+            current_host: String::new(),
             last_ssh_config: None,
-
+            scroll_offset: 0,
+            selected_row: None,
+            mode: Mode::Normal,
+            filter_text: String::new(),
+            find_text: String::new(),
+            find_matches: Vec::new(),
+            find_current: 0,
+            conn: ConnectForm::default(),
+            bookmark_offset: 0,
+            bookmark_selected: 0,
+            status: "Press ? for help | c = connect SSH | o = open file".to_string(),
+            save_settings: load_settings(),
             pending_file,
-
             pending_ssh_profile,
-
-            find: FindState {
-                active: false,
-                search_text: String::new(),
-                regex: None,
-                match_indices: Vec::new(),
-                current_match: 0,
-                request_focus: false,
-            },
-
-            show_help: false,
-
-            saved_filter_bar: None,
-
-            bookmarks: HashSet::new(),
-            show_bookmarks: false,
+            should_quit: false,
         }
     }
 
-    fn load_file(&mut self, path: String) {
-        self.reset_state();
-        self.current_host = "local".to_string();
-        self.is_loading = true;
-        self.status_message = format!("Loading: {}", path);
+    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> anyhow::Result<()> {
+        if let Some(path) = self.pending_file.take() {
+            self.open_file(path);
+        }
+        if let Some(name) = self.pending_ssh_profile.take() {
+            self.connect_profile(&name);
+        }
 
-        let (tx, rx) = unbounded();
-        self.bg_receiver = Some(rx);
-        file_reader::read_file(path, tx);
+        loop {
+            self.process_messages();
+            terminal.draw(|f| crate::ui::draw(f, self))?;
+
+            if crossterm::event::poll(Duration::from_millis(50))? {
+                match crossterm::event::read()? {
+                    Event::Key(key) => self.handle_key(key),
+                    Event::Resize(_, _) => {}
+                    _ => {}
+                }
+            }
+
+            if self.should_quit {
+                break;
+            }
+        }
+
+        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
+            self.save_now();
+        }
+
+        Ok(())
     }
 
-    fn start_ssh(&mut self, config: ssh_reader::SshConfig) {
+    fn handle_key(&mut self, key: KeyEvent) {
+        match self.mode {
+            Mode::Normal => self.handle_normal(key),
+            Mode::Filter => self.handle_filter(key),
+            Mode::Find   => self.handle_find(key),
+            Mode::Connect => self.handle_connect(key),
+            Mode::Bookmarks => self.handle_bookmarks(key),
+            Mode::Help => { self.mode = Mode::Normal; }
+        }
+    }
+
+    fn handle_normal(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('c') => {
+                self.conn = ConnectForm::default();
+                self.mode = Mode::Connect;
+            }
+            KeyCode::Char('o') => {
+                self.status = "Enter file path in filter bar and press Enter".to_string();
+                // Repurpose filter bar for file path entry
+                self.filter_text = String::new();
+                self.mode = Mode::Filter; // Will detect if input looks like a path
+            }
+            KeyCode::Char('r') => {
+                if let Some(config) = self.last_ssh_config.clone() {
+                    self.start_ssh(config);
+                }
+            }
+            KeyCode::Char('d') => self.disconnect(),
+            KeyCode::Char('/') => {
+                self.mode = Mode::Filter;
+                self.status = "Filter (regex) — Enter to apply, Esc to clear".to_string();
+            }
+            KeyCode::Char('f') | KeyCode::Char('F') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::Find;
+                self.status = "Find — n/N to navigate, Esc to close".to_string();
+            }
+            KeyCode::Char('n') => self.find_next(),
+            KeyCode::Char('N') => self.find_prev(),
+            KeyCode::Char('b') => self.toggle_bookmark(),
+            KeyCode::Char('B') => {
+                self.mode = Mode::Bookmarks;
+                self.bookmark_selected = 0;
+                self.bookmark_offset = 0;
+            }
+            KeyCode::Char('g') => self.go_to_top(),
+            KeyCode::Char('G') => self.go_to_bottom(),
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(1),
+            KeyCode::Up   | KeyCode::Char('k') => self.move_up(1),
+            KeyCode::PageDown => self.move_down(20),
+            KeyCode::PageUp   => self.move_up(20),
+            KeyCode::Esc => {
+                // Clear filter
+                self.filter_text.clear();
+                self.filter.set_pattern("");
+                self.apply_filter();
+                self.status = "Filter cleared".to_string();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_filter(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = String::new();
+            }
+            KeyCode::Enter => {
+                let text = self.filter_text.trim().to_string();
+                // If it looks like a file path, open it
+                if text.starts_with('/') || text.starts_with('~') || text.starts_with('.') {
+                    self.mode = Mode::Normal;
+                    self.open_file(text);
+                } else {
+                    if !self.filter.set_pattern(&text) {
+                        self.status = "Invalid regex".to_string();
+                    } else {
+                        self.apply_filter();
+                        self.mode = Mode::Normal;
+                        self.status = format!("Showing {} / {} entries", self.filtered_indices.len(), self.log_store.entries.len());
+                    }
+                }
+            }
+            KeyCode::Backspace => { self.filter_text.pop(); }
+            KeyCode::Char(c) => self.filter_text.push(c),
+            _ => {}
+        }
+    }
+
+    fn handle_find(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.find_text.clear();
+                self.find_matches.clear();
+                self.status = String::new();
+            }
+            KeyCode::Enter | KeyCode::Down | KeyCode::Char('n') => self.find_next(),
+            KeyCode::Up    | KeyCode::Char('N') => self.find_prev(),
+            KeyCode::Backspace => {
+                self.find_text.pop();
+                self.update_find_matches();
+            }
+            KeyCode::Char(c) => {
+                self.find_text.push(c);
+                self.update_find_matches();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_connect(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Tab => {
+                self.conn.focused = (self.conn.focused + 1) % self.conn.field_count();
+            }
+            KeyCode::BackTab => {
+                let n = self.conn.field_count();
+                self.conn.focused = (self.conn.focused + n - 1) % n;
+            }
+            KeyCode::Enter => {
+                let focused = self.conn.focused;
+                match focused {
+                    7 => { // Connect button
+                        match self.conn.to_ssh_config() {
+                            Ok(config) => {
+                                self.mode = Mode::Normal;
+                                self.start_ssh(config);
+                            }
+                            Err(e) => self.conn.error = e,
+                        }
+                    }
+                    8 => { // Save profile
+                        self.conn.save_current_profile();
+                        self.conn.error = "Profile saved".to_string();
+                    }
+                    9 => self.mode = Mode::Normal, // Cancel
+                    // Profile selection
+                    6 => {
+                        if let Some(idx) = self.conn.profile_idx {
+                            let next = (idx + 1) % self.conn.profiles.len().max(1);
+                            self.conn.load_profile(next);
+                        } else if !self.conn.profiles.is_empty() {
+                            self.conn.load_profile(0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Left | KeyCode::Right if self.conn.focused == 3 => {
+                // Toggle auth choice
+                self.conn.auth_choice = (self.conn.auth_choice + 1) % 3;
+            }
+            KeyCode::Up if self.conn.focused == 6 => {
+                // Scroll profiles up
+                if let Some(idx) = self.conn.profile_idx {
+                    if idx > 0 { self.conn.load_profile(idx - 1); }
+                } else if !self.conn.profiles.is_empty() {
+                    self.conn.load_profile(0);
+                }
+            }
+            KeyCode::Down if self.conn.focused == 6 => {
+                // Scroll profiles down
+                let n = self.conn.profiles.len();
+                if n == 0 { return; }
+                let next = self.conn.profile_idx.map(|i| (i + 1) % n).unwrap_or(0);
+                self.conn.load_profile(next);
+            }
+            KeyCode::Backspace => {
+                match self.conn.focused {
+                    0 => { self.conn.host.pop(); }
+                    1 => { self.conn.port.pop(); }
+                    2 => { self.conn.username.pop(); }
+                    4 => { if self.conn.auth_choice == 0 { self.conn.password.pop(); } else { self.conn.key_path.pop(); } }
+                    5 => { self.conn.command.pop(); }
+                    9 => { self.conn.profile_name.pop(); }
+                    _ => {}
+                }
+            }
+            KeyCode::Char(c) => {
+                match self.conn.focused {
+                    0 => self.conn.host.push(c),
+                    1 => self.conn.port.push(c),
+                    2 => self.conn.username.push(c),
+                    4 => { if self.conn.auth_choice == 0 { self.conn.password.push(c); } else { self.conn.key_path.push(c); } }
+                    5 => self.conn.command.push(c),
+                    9 => self.conn.profile_name.push(c),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_bookmarks(&mut self, key: KeyEvent) {
+        let sorted: Vec<usize> = {
+            let mut v: Vec<usize> = self.bookmarks.iter().copied().collect();
+            v.sort();
+            v
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !sorted.is_empty() {
+                    self.bookmark_selected = (self.bookmark_selected + 1).min(sorted.len() - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.bookmark_selected = self.bookmark_selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(&entry_idx) = sorted.get(self.bookmark_selected) {
+                    if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
+                        self.selected_row = Some(row);
+                        self.scroll_to(row);
+                        self.mode = Mode::Normal;
+                    } else {
+                        self.status = "Entry is hidden by active filter".to_string();
+                    }
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(&entry_idx) = sorted.get(self.bookmark_selected) {
+                    self.bookmarks.remove(&entry_idx);
+                    self.bookmark_selected = self.bookmark_selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('c') => {
+                self.bookmarks.clear();
+                self.bookmark_selected = 0;
+            }
+            _ => {}
+        }
+    }
+
+    // --- Log navigation ---
+
+    pub fn move_down(&mut self, n: usize) {
+        let len = self.filtered_indices.len();
+        if len == 0 { return; }
+        let cur = self.selected_row.unwrap_or(0);
+        let next = (cur + n).min(len - 1);
+        self.selected_row = Some(next);
+        self.scroll_to(next);
+    }
+
+    pub fn move_up(&mut self, n: usize) {
+        let cur = self.selected_row.unwrap_or(0);
+        let next = cur.saturating_sub(n);
+        self.selected_row = Some(next);
+        self.scroll_to(next);
+    }
+
+    pub fn go_to_top(&mut self) {
+        self.selected_row = if self.filtered_indices.is_empty() { None } else { Some(0) };
+        self.scroll_offset = 0;
+    }
+
+    pub fn go_to_bottom(&mut self) {
+        let len = self.filtered_indices.len();
+        if len == 0 { self.selected_row = None; return; }
+        self.selected_row = Some(len - 1);
+        self.scroll_to(len - 1);
+    }
+
+    pub fn scroll_to(&mut self, row: usize) {
+        // viewport height is unknown here; use a rough estimate, ui will correct it
+        if row < self.scroll_offset {
+            self.scroll_offset = row;
+        } else if row >= self.scroll_offset + 40 {
+            self.scroll_offset = row.saturating_sub(39);
+        }
+    }
+
+    pub fn ensure_selected_visible(&mut self, visible_rows: usize) {
+        if visible_rows == 0 { return; }
+        if let Some(row) = self.selected_row {
+            if row < self.scroll_offset {
+                self.scroll_offset = row;
+            } else if row >= self.scroll_offset + visible_rows {
+                self.scroll_offset = row + 1 - visible_rows;
+            }
+        }
+    }
+
+    // --- Bookmarks ---
+
+    pub fn toggle_bookmark(&mut self) {
+        if let Some(row) = self.selected_row {
+            if let Some(&entry_idx) = self.filtered_indices.get(row) {
+                if self.bookmarks.contains(&entry_idx) {
+                    self.bookmarks.remove(&entry_idx);
+                    self.status = format!("Bookmark removed (line {})", entry_idx + 1);
+                } else {
+                    self.bookmarks.insert(entry_idx);
+                    self.status = format!("Bookmarked line {} — {} total", entry_idx + 1, self.bookmarks.len());
+                }
+            }
+        }
+    }
+
+    // --- Find ---
+
+    pub fn update_find_matches(&mut self) {
+        self.find_matches.clear();
+        self.find_current = 0;
+        if self.find_text.is_empty() { return; }
+        if let Ok(re) = regex::RegexBuilder::new(&regex::escape(&self.find_text))
+            .case_insensitive(true)
+            .build()
+        {
+            for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
+                if let Some(entry) = self.log_store.entries.get(entry_idx) {
+                    if re.is_match(&entry.message) {
+                        self.find_matches.push(row_idx);
+                    }
+                }
+            }
+        }
+        self.status = format!("{} match(es) for '{}'", self.find_matches.len(), self.find_text);
+    }
+
+    pub fn find_next(&mut self) {
+        if self.find_matches.is_empty() { return; }
+        self.find_current = (self.find_current + 1) % self.find_matches.len();
+        let row = self.find_matches[self.find_current];
+        self.selected_row = Some(row);
+        self.scroll_to(row);
+    }
+
+    pub fn find_prev(&mut self) {
+        if self.find_matches.is_empty() { return; }
+        let n = self.find_matches.len();
+        self.find_current = (self.find_current + n - 1) % n;
+        let row = self.find_matches[self.find_current];
+        self.selected_row = Some(row);
+        self.scroll_to(row);
+    }
+
+    // --- Filter ---
+
+    pub fn apply_filter(&mut self) {
+        self.filtered_indices.clear();
+        let pin = self.save_settings.always_show_bookmarks;
+        for (i, entry) in self.log_store.entries.iter().enumerate() {
+            if self.filter.matches(entry) || (pin && self.bookmarks.contains(&i)) {
+                self.filtered_indices.push(i);
+            }
+        }
+        self.selected_row = self.selected_row.map(|r| r.min(self.filtered_indices.len().saturating_sub(1)));
+        if self.find_text.is_empty() { return; }
+        self.update_find_matches();
+    }
+
+    // --- Connection ---
+
+    pub fn connect_profile(&mut self, name: &str) {
+        match config_for_profile(name) {
+            Some(config) => self.start_ssh(config),
+            None => self.status = format!("Profile '{}' not found", name),
+        }
+    }
+
+    pub fn start_ssh(&mut self, config: SshConfig) {
         self.reset_state();
         self.current_host = config.host.clone();
         self.last_ssh_config = Some(config.clone());
         self.is_loading = true;
-        self.is_connected = false;
-        self.status_message = format!("Connecting to {}...", config.host);
+        self.status = format!("Connecting to {}...", config.host);
 
-        let (tx, rx) = unbounded();
-        let (cmd_tx, cmd_rx) = unbounded();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         self.bg_receiver = Some(rx);
         self.bg_cmd_sender = Some(cmd_tx);
         ssh_reader::start_ssh(config, tx, cmd_rx);
     }
 
-    fn disconnect(&mut self) {
+    pub fn open_file(&mut self, path: String) {
+        self.reset_state();
+        self.current_host = path.clone();
+        self.is_loading = true;
+        self.status = format!("Loading {}...", path);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.bg_receiver = Some(rx);
+        file_reader::read_file(path, tx);
+    }
+
+    pub fn disconnect(&mut self) {
         if let Some(ref sender) = self.bg_cmd_sender {
             let _ = sender.send(BackgroundCommand::Disconnect);
         }
         self.bg_cmd_sender = None;
         self.is_connected = false;
         self.is_loading = false;
-        self.status_message = "Disconnected".to_string();
+        self.status = "Disconnected".to_string();
     }
 
     fn reset_state(&mut self) {
@@ -187,758 +653,98 @@ impl JlogApp {
         self.bg_cmd_sender = None;
         self.is_loading = false;
         self.is_connected = false;
-        self.total_lines = 0;
-        self.filter_bar = FilterBar::default();
+        self.scroll_offset = 0;
+        self.selected_row = None;
+        self.filter_text.clear();
         self.filter = FilterCriteria::default();
+        self.find_text.clear();
+        self.find_matches.clear();
         self.bookmarks.clear();
-        self.show_bookmarks = false;
     }
 
-    fn process_messages(&mut self) {
+    // --- Background message processing ---
+
+    pub fn process_messages(&mut self) {
         let receiver = match &self.bg_receiver {
             Some(rx) => rx.clone(),
             None => return,
         };
 
-        let mut new_entries = false;
-        let entries_before = self.log_store.entries.len();
-        // Drain up to 5000 messages per frame to stay responsive
-        for _ in 0..5000 {
+        let mut count = 0;
+        loop {
             match receiver.try_recv() {
-                Ok(msg) => match msg {
-                    BackgroundMessage::Entry(entry) => {
-                        self.log_store.services.insert(entry.service.clone());
-                        self.log_store.entries.push(entry);
-                        new_entries = true;
-                    }
-                    BackgroundMessage::Progress { lines, percent } => {
-                        self.total_lines = lines;
-                        if percent > 0.0 {
-                            self.status_message = format!(
-                                "Loading: {} lines ({:.1}%) - {} entries",
-                                lines, percent, self.log_store.entries.len()
-                            );
-                        } else {
-                            self.status_message = format!(
-                                "Streaming: {} lines - {} entries",
-                                lines, self.log_store.entries.len()
-                            );
-                        }
-                    }
-                    BackgroundMessage::Completed { total_lines, entries } => {
-                        self.is_loading = false;
-                        self.total_lines = total_lines;
-                        self.status_message = format!(
-                            "Loaded {} entries from {} lines",
-                            entries, total_lines
-                        );
-                    }
-                    BackgroundMessage::Error(e) => {
-                        self.is_loading = false;
-                        self.status_message = format!("Error: {}", e);
-                    }
-                    BackgroundMessage::SshConnected => {
-                        self.is_connected = true;
-                        self.status_message = "SSH connected - streaming...".to_string();
-                    }
-                    BackgroundMessage::SshDisconnected => {
-                        self.is_connected = false;
-                        self.is_loading = false;
-                        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
-                            self.save_now();
-                        }
-                        if !self.status_message.starts_with("Error") && !self.status_message.starts_with("Saved") {
-                            self.status_message = format!(
-                                "Disconnected - {} entries loaded",
-                                self.log_store.entries.len()
-                            );
-                        }
-                    }
-                },
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    self.bg_receiver = None;
-                    break;
+                Ok(msg) => {
+                    self.handle_message(msg);
+                    count += 1;
+                    if count >= 5000 { break; }
                 }
+                Err(_) => break,
             }
         }
 
-        if new_entries {
-            let new_count = self.log_store.entries.len() - entries_before;
-            self.log_viewer.notify_new_entries(new_count);
+        if count > 0 {
             self.apply_filter();
+            // Auto-scroll to bottom while loading
+            if self.is_loading && self.selected_row.is_none() {
+                let len = self.filtered_indices.len();
+                if len > 0 {
+                    self.scroll_offset = len.saturating_sub(40);
+                }
+            }
         }
     }
 
-    fn save_now(&mut self) {
-        let entries: Vec<&crate::analyzer::LogEntry> = if self.save_settings.save_filtered_only {
-            self.filtered_indices
-                .iter()
-                .map(|&i| &self.log_store.entries[i])
+    fn handle_message(&mut self, msg: BackgroundMessage) {
+        match msg {
+            BackgroundMessage::Entry(entry) => {
+                self.log_store.services.insert(entry.service.clone());
+                self.log_store.entries.push(entry);
+            }
+            BackgroundMessage::Progress { lines, .. } => {
+                self.status = format!("Loading... {} lines", lines);
+            }
+            BackgroundMessage::Completed { total_lines, entries } => {
+                self.is_loading = false;
+                self.status = format!("Loaded {} entries from {} lines — {}", entries, total_lines, self.current_host);
+            }
+            BackgroundMessage::Error(e) => {
+                self.is_loading = false;
+                self.status = format!("Error: {}", e);
+            }
+            BackgroundMessage::SshConnected => {
+                self.is_connected = true;
+                self.is_loading = false;
+                self.status = format!("Connected to {} — streaming live", self.current_host);
+            }
+            BackgroundMessage::SshDisconnected => {
+                self.is_connected = false;
+                self.status = format!("Disconnected from {}", self.current_host);
+                if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
+                    self.save_now();
+                }
+            }
+        }
+    }
+
+    // --- Save ---
+
+    pub fn save_now(&mut self) {
+        let path = self.save_settings.resolve_filename(&self.current_host);
+        let entries: Vec<&LogEntry> = if self.save_settings.save_filtered_only {
+            self.filtered_indices.iter()
+                .filter_map(|&i| self.log_store.entries.get(i))
                 .collect()
         } else {
             self.log_store.entries.iter().collect()
         };
 
-        if entries.is_empty() {
-            self.status_message = "Nothing to save - no log entries".to_string();
-            return;
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-
-        match log_writer::save_logs(&entries, &self.save_settings, &self.current_host) {
-            Ok(path) => {
-                self.status_message = format!("Saved {} entries to {}", entries.len(), path);
-            }
-            Err(e) => {
-                self.status_message = format!("Save error: {}", e);
-            }
-        }
-    }
-
-    fn update_find_matches(&mut self) {
-        self.find.match_indices.clear();
-        self.find.current_match = 0;
-        if let Some(ref re) = self.find.regex {
-            for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
-                if let Some(entry) = self.log_store.entries.get(entry_idx) {
-                    if re.is_match(&entry.message) {
-                        self.find.match_indices.push(row_idx);
-                    }
-                }
-            }
-        }
-    }
-
-    fn find_jump_to_current(&mut self) {
-        if let Some(&row) = self.find.match_indices.get(self.find.current_match) {
-            self.log_viewer.scroll_to_row = Some(row);
-        }
-    }
-
-    fn apply_filter(&mut self) {
-        self.filtered_indices.clear();
-        let pin_bookmarks = self.save_settings.always_show_bookmarks;
-        for (i, entry) in self.log_store.entries.iter().enumerate() {
-            if self.filter.matches(entry) || (pin_bookmarks && self.bookmarks.contains(&i)) {
-                self.filtered_indices.push(i);
-            }
-        }
-        // Re-scan find matches against updated filtered set
-        if self.find.active {
-            self.update_find_matches();
-        }
-    }
-}
-
-impl eframe::App for JlogApp {
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
-            self.save_now();
-        }
-    }
-
-    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        // Use exact egui panel background to prevent artifacts on resize/maximize
-        let c = visuals.panel_fill;
-        [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Always repaint — prevents stale frame artifacts on resize/maximize (WSL2/X11)
-        ctx.request_repaint();
-
-        // Load file from CLI argument on first frame
-        if let Some(path) = self.pending_file.take() {
-            self.load_file(path);
-        }
-
-        // Connect to SSH profile from CLI argument on first frame
-        if let Some(name) = self.pending_ssh_profile.take() {
-            if let Some(config) = crate::ui::connection_dialog::config_for_profile(&name) {
-                self.start_ssh(config);
-            } else {
-                self.status_message = format!("SSH profile '{}' not found", name);
-            }
-        }
-
-        // Poll background messages
-        self.process_messages();
-
-        // Dialogs
-        if let Some(path) = self.open_file_dialog.show(ctx) {
-            self.load_file(path);
-        }
-        if let Some(config) = self.connection_dialog.show(ctx) {
-            self.start_ssh(config);
-        }
-        if let Some(new_settings) = self.save_settings_dialog.show(ctx) {
-            save_settings_to_disk(&new_settings);
-            self.save_settings = new_settings;
-        }
-
-        // Help window
-        if self.show_help {
-            let mut open = self.show_help;
-            egui::Window::new("Shortcuts & About")
-                .open(&mut open)
-                .resizable(true)
-                .collapsible(false)
-                .default_width(480.0)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("Keyboard Shortcuts");
-                    egui::Grid::new("shortcuts_grid")
-                        .striped(true)
-                        .spacing([20.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.strong("Shortcut");
-                            ui.strong("Action");
-                            ui.end_row();
-
-                            ui.monospace("Ctrl+F");
-                            ui.label("Find in logs");
-                            ui.end_row();
-
-                            ui.monospace("Escape");
-                            ui.label("Close find bar");
-                            ui.end_row();
-
-                            ui.monospace("Enter / F3");
-                            ui.label("Next find match");
-                            ui.end_row();
-
-                            ui.monospace("Shift+Enter / Shift+F3");
-                            ui.label("Previous find match");
-                            ui.end_row();
-
-                            ui.monospace("Ctrl+C");
-                            ui.label("Copy selected log line");
-                            ui.end_row();
-
-                            ui.monospace("B");
-                            ui.label("Bookmark / unbookmark selected entry");
-                            ui.end_row();
-
-                            ui.monospace("Ctrl+B");
-                            ui.label("Toggle bookmark timeline window");
-                            ui.end_row();
-
-                            ui.monospace("Right-click");
-                            ui.label("Copy / bookmark menu");
-                            ui.end_row();
-                        });
-
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    ui.heading("Regex Filter Reference");
-                    ui.add_space(4.0);
-                    ui.label("The filter fields accept full Rust regex syntax.");
-                    ui.add_space(6.0);
-
-                    egui::Grid::new("regex_grid")
-                        .striped(true)
-                        .spacing([20.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.strong("Pattern");
-                            ui.strong("Matches");
-                            ui.end_row();
-
-                            ui.monospace("error");
-                            ui.label("Lines containing \"error\"");
-                            ui.end_row();
-
-                            ui.monospace("error|warning");
-                            ui.label("Lines containing \"error\" OR \"warning\"");
-                            ui.end_row();
-
-                            ui.monospace("foo.*bar");
-                            ui.label("\"foo\" followed by anything then \"bar\"");
-                            ui.end_row();
-
-                            ui.monospace("^kernel:");
-                            ui.label("Lines starting with \"kernel:\"");
-                            ui.end_row();
-
-                            ui.monospace("timeout$");
-                            ui.label("Lines ending with \"timeout\"");
-                            ui.end_row();
-
-                            ui.monospace("\\d+");
-                            ui.label("One or more digits");
-                            ui.end_row();
-
-                            ui.monospace("[Ee]rror");
-                            ui.label("\"Error\" or \"error\"");
-                            ui.end_row();
-
-                            ui.monospace("(?i)error");
-                            ui.label("Case-insensitive match for \"error\"");
-                            ui.end_row();
-
-                            ui.monospace("failed (to|with)");
-                            ui.label("\"failed to\" or \"failed with\"");
-                            ui.end_row();
-                        });
-
-                    ui.add_space(6.0);
-                    ui.label("Use the AND / OR / NOT combine mode to apply a second pattern.");
-                    ui.label("NOT mode hides lines that match the pattern.");
-
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    ui.heading("About");
-                    ui.label(format!("jlog v{}", env!("CARGO_PKG_VERSION")));
-                    ui.label("A JSON log viewer and analyzer.");
-
-                    ui.add_space(8.0);
-                    if ui.button("Close").clicked() {
-                        self.show_help = false;
-                    }
-                    }); // ScrollArea
-                });
-            self.show_help = open;
-        }
-
-        // Top menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Open File...").clicked() {
-                        ui.close_menu();
-                        self.open_file_dialog.open = true;
-                    }
-                    ui.separator();
-                    if ui.button("Save Logs Now").clicked() {
-                        ui.close_menu();
-                        self.save_now();
-                    }
-                    if ui.button("Save Settings...").clicked() {
-                        ui.close_menu();
-                        self.save_settings_dialog.load_from(&self.save_settings);
-                        self.save_settings_dialog.open = true;
-                    }
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-
-                ui.menu_button("SSH", |ui| {
-                    if ui.button("Connect SSH...").clicked() {
-                        ui.close_menu();
-                        self.connection_dialog.open = true;
-                    }
-
-                    let profiles = self.connection_dialog.profiles().to_vec();
-                    if !profiles.is_empty() {
-                        ui.separator();
-                        for (i, profile) in profiles.iter().enumerate() {
-                            if ui.button(&profile.name).clicked() {
-                                ui.close_menu();
-                                self.connection_dialog.select_profile(i);
-                            }
-                        }
-                    }
-
-                    if self.is_connected {
-                        ui.separator();
-                        if ui.button("Disconnect").clicked() {
-                            ui.close_menu();
-                            self.disconnect();
-                        }
-                    }
-                });
-
-                ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.log_viewer.auto_scroll, "Auto-scroll");
-                    ui.separator();
-                    let bookmark_label = format!("Bookmarks ({})...", self.bookmarks.len());
-                    if ui.button(bookmark_label).clicked() {
-                        self.show_bookmarks = true;
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("Help", |ui| {
-                    if ui.button("Shortcuts & About...").clicked() {
-                        self.show_help = true;
-                        ui.close_menu();
-                    }
-                });
-            });
-        });
-
-        // Filter bar panel
-        egui::TopBottomPanel::top("filter_bar").show(ctx, |ui| {
-            let services = self.log_store.service_names();
-            if self.filter_bar.show(ui, &services, &mut self.filter) {
-                self.apply_filter();
-            }
-        });
-
-        // Keyboard shortcut: Ctrl+F to open find bar
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
-            self.find.active = true;
-            self.find.request_focus = true;
-        }
-
-        // Keyboard shortcut: Ctrl+B to toggle bookmark window
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::B)) {
-            self.show_bookmarks = !self.show_bookmarks;
-        }
-
-        // Handle bookmark toggle request from log viewer
-        if let Some(entry_idx) = self.log_viewer.toggle_bookmark_requested.take() {
-            if self.bookmarks.contains(&entry_idx) {
-                self.bookmarks.remove(&entry_idx);
-            } else {
-                self.bookmarks.insert(entry_idx);
-            }
-        }
-
-        // Find bar shortcuts (only when active)
-        let mut find_next = false;
-        let mut find_prev = false;
-        let mut find_close = false;
-
-        if self.find.active {
-            ctx.input(|i| {
-                if i.key_pressed(egui::Key::Escape) {
-                    find_close = true;
-                }
-                if i.key_pressed(egui::Key::F3) {
-                    if i.modifiers.shift {
-                        find_prev = true;
-                    } else {
-                        find_next = true;
-                    }
-                }
-                if i.key_pressed(egui::Key::Enter) {
-                    if i.modifiers.shift {
-                        find_prev = true;
-                    } else {
-                        find_next = true;
-                    }
-                }
-            });
-        }
-
-        if find_close {
-            self.find.active = false;
-            self.find.search_text.clear();
-            self.find.regex = None;
-            self.find.match_indices.clear();
-            self.find.current_match = 0;
-        }
-
-        if find_next && !self.find.match_indices.is_empty() {
-            self.find.current_match = (self.find.current_match + 1) % self.find.match_indices.len();
-            self.find_jump_to_current();
-        }
-        if find_prev && !self.find.match_indices.is_empty() {
-            if self.find.current_match == 0 {
-                self.find.current_match = self.find.match_indices.len() - 1;
-            } else {
-                self.find.current_match -= 1;
-            }
-            self.find_jump_to_current();
-        }
-
-        // Find bar panel
-        if self.find.active {
-            egui::TopBottomPanel::top("find_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Find:");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.find.search_text)
-                            .desired_width(250.0)
-                            .hint_text("Search in messages...")
-                    );
-
-                    if self.find.request_focus {
-                        response.request_focus();
-                        self.find.request_focus = false;
-                    }
-
-                    if response.changed() {
-                        // Recompile regex on text change
-                        if self.find.search_text.is_empty() {
-                            self.find.regex = None;
-                            self.find.match_indices.clear();
-                            self.find.current_match = 0;
-                        } else {
-                            match regex::RegexBuilder::new(&regex::escape(&self.find.search_text))
-                                .case_insensitive(true)
-                                .build()
-                            {
-                                Ok(re) => {
-                                    self.find.regex = Some(re);
-                                    self.update_find_matches();
-                                    // Jump to first match
-                                    if !self.find.match_indices.is_empty() {
-                                        self.find.current_match = 0;
-                                        self.find_jump_to_current();
-                                    }
-                                }
-                                Err(_) => {
-                                    self.find.regex = None;
-                                    self.find.match_indices.clear();
-                                }
-                            }
-                        }
-                    }
-
-                    // Match counter
-                    if self.find.search_text.is_empty() {
-                        ui.label("0/0");
-                    } else if self.find.match_indices.is_empty() {
-                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "0/0");
-                    } else {
-                        ui.label(format!(
-                            "{}/{}",
-                            self.find.current_match + 1,
-                            self.find.match_indices.len()
-                        ));
-                    }
-
-                    if ui.small_button("\u{25B2} Prev").clicked() && !self.find.match_indices.is_empty() {
-                        if self.find.current_match == 0 {
-                            self.find.current_match = self.find.match_indices.len() - 1;
-                        } else {
-                            self.find.current_match -= 1;
-                        }
-                        self.find_jump_to_current();
-                    }
-                    if ui.small_button("\u{25BC} Next").clicked() && !self.find.match_indices.is_empty() {
-                        self.find.current_match = (self.find.current_match + 1) % self.find.match_indices.len();
-                        self.find_jump_to_current();
-                    }
-                    if ui.small_button("\u{2715} Close").clicked() {
-                        self.find.active = false;
-                        self.find.search_text.clear();
-                        self.find.regex = None;
-                        self.find.match_indices.clear();
-                        self.find.current_match = 0;
-                    }
-                });
-            });
-        }
-
-        // Status bar
-        let mut reconnect_action = false;
-        let mut disconnect_action = false;
-        let mut connect_action = false;
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if self.is_connected {
-                    ui.colored_label(egui::Color32::GREEN, "\u{25CF} Connected");
-                } else if self.is_loading {
-                    ui.colored_label(egui::Color32::YELLOW, "\u{25CF} Loading");
-                } else {
-                    ui.colored_label(egui::Color32::GRAY, "\u{25CF} Idle");
-                }
-
-                // Quick action buttons for SSH mode
-                if self.last_ssh_config.is_some() {
-                    ui.separator();
-                    if self.is_connected {
-                        if ui.small_button("Disconnect").clicked() {
-                            disconnect_action = true;
-                        }
-                    } else if !self.is_loading {
-                        if ui.small_button("Reconnect").clicked() {
-                            reconnect_action = true;
-                        }
-                        if ui.small_button("Connect...").clicked() {
-                            connect_action = true;
-                        }
-                    }
-                }
-
-                ui.separator();
-                ui.label(&self.status_message);
-                ui.separator();
-                ui.label(format!(
-                    "Showing {} / {} entries",
-                    self.filtered_indices.len(),
-                    self.log_store.entries.len()
-                ));
-            });
-        });
-
-        // Handle status bar button actions (outside borrow of ui)
-        if disconnect_action {
-            self.disconnect();
-        }
-        if reconnect_action {
-            if let Some(config) = self.last_ssh_config.clone() {
-                self.start_ssh(config);
-            }
-        }
-        if connect_action {
-            self.connection_dialog.open = true;
-        }
-
-        // Handle "Show in Context" request (before rendering panels so data is ready this frame)
-        if self.log_viewer.show_in_context_requested {
-            self.log_viewer.show_in_context_requested = false;
-            if let Some(entry_idx) = self.log_viewer.selected_entry {
-                self.saved_filter_bar = Some(self.filter_bar.clone());
-                self.filter_bar = FilterBar::default();
-                self.filter = FilterCriteria::default();
-                self.apply_filter();
-                // Find the row index of entry_idx in the now-unfiltered list
-                if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
-                    self.log_viewer.scroll_to_row = Some(row);
-                }
-            }
-        }
-
-        // "Filters temporarily cleared" banner
-        if self.saved_filter_bar.is_some() {
-            egui::TopBottomPanel::top("context_banner").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 200, 60),
-                        "Filters temporarily cleared — showing all logs",
-                    );
-                    if ui.button("Restore Filters").clicked() {
-                        if let Some(saved) = self.saved_filter_bar.take() {
-                            self.filter_bar = saved;
-                            self.filter_bar.apply_to_filter(&mut self.filter);
-                            self.apply_filter();
-                        }
-                    }
-                });
-            });
-        }
-
-        // Bookmark / timeline window
-        if self.show_bookmarks {
-            let mut open = self.show_bookmarks;
-            let bookmark_count = self.bookmarks.len();
-            let title = format!("Bookmarks ({}) \u{2014} Timeline", bookmark_count);
-            let mut remove_idx: Option<usize> = None;
-            let mut navigate_idx: Option<usize> = None;
-
-            egui::Window::new(title)
-                .open(&mut open)
-                .resizable(true)
-                .default_size([760.0, 420.0])
-                .show(ctx, |ui| {
-                    if self.bookmarks.is_empty() {
-                        ui.centered_and_justified(|ui| {
-                            ui.label("No bookmarks yet.\nRight-click a log entry or press B to bookmark.");
-                        });
-                    } else {
-                        ui.horizontal(|ui| {
-                            if ui.button("Clear All").clicked() {
-                                self.bookmarks.clear();
-                            }
-                            ui.label(egui::RichText::new(format!("{} bookmarks — click a row to navigate", bookmark_count))
-                                .color(egui::Color32::from_rgb(160, 160, 160)));
-                        });
-                        ui.separator();
-
-                        // Header
-                        ui.horizontal(|ui| {
-                            ui.add_sized([55.0, 16.0], egui::Label::new(egui::RichText::new("Line#").strong().monospace()));
-                            ui.add_sized([160.0, 16.0], egui::Label::new(egui::RichText::new("Timestamp").strong().monospace()));
-                            ui.add_sized([55.0, 16.0], egui::Label::new(egui::RichText::new("Pri").strong().monospace()));
-                            ui.add_sized([140.0, 16.0], egui::Label::new(egui::RichText::new("Service").strong().monospace()));
-                            ui.label(egui::RichText::new("Message").strong().monospace());
-                        });
-                        ui.separator();
-
-                        let mut sorted: Vec<usize> = self.bookmarks.iter().copied().collect();
-                        sorted.sort();
-
-                        egui::ScrollArea::both().show(ui, |ui| {
-                            for &entry_idx in &sorted {
-                                if let Some(entry) = self.log_store.entries.get(entry_idx) {
-                                    let row = ui.horizontal(|ui| {
-                                        ui.add_sized([55.0, 18.0], egui::Label::new(
-                                            egui::RichText::new(format!("\u{2605}{}", entry.line_num))
-                                                .monospace()
-                                                .color(egui::Color32::from_rgb(255, 200, 50)),
-                                        ));
-                                        ui.add_sized([160.0, 18.0], egui::Label::new(
-                                            egui::RichText::new(&entry.timestamp)
-                                                .monospace()
-                                                .color(egui::Color32::from_rgb(180, 180, 180)),
-                                        ));
-                                        ui.add_sized([55.0, 18.0], egui::Label::new(
-                                            egui::RichText::new(priority_label(entry.priority))
-                                                .monospace()
-                                                .color(priority_color(entry.priority)),
-                                        ));
-                                        ui.add_sized([140.0, 18.0], egui::Label::new(
-                                            egui::RichText::new(&entry.service)
-                                                .monospace()
-                                                .color(egui::Color32::from_rgb(130, 200, 255)),
-                                        ));
-                                        let msg_resp = ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(&entry.message)
-                                                    .monospace()
-                                                    .color(egui::Color32::from_rgb(220, 220, 220)),
-                                            )
-                                            .sense(egui::Sense::click()),
-                                        );
-                                        if msg_resp.clicked() {
-                                            navigate_idx = Some(entry_idx);
-                                        }
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.small_button("\u{2715}").clicked() {
-                                                remove_idx = Some(entry_idx);
-                                            }
-                                        });
-                                    });
-                                    let row_rect = row.response.rect;
-                                    let row_resp = ui.interact(row_rect, ui.id().with(("bm_row", entry_idx)), egui::Sense::click());
-                                    if row_resp.clicked() {
-                                        navigate_idx = Some(entry_idx);
-                                    }
-                                    if row_resp.hovered() {
-                                        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(50, 50, 65, 100));
-                                    }
-                                    ui.separator();
-                                }
-                            }
-                        });
-                    }
-                });
-
-            self.show_bookmarks = open;
-
-            if let Some(idx) = remove_idx {
-                self.bookmarks.remove(&idx);
-            }
-            if let Some(entry_idx) = navigate_idx {
-                self.log_viewer.selected_entry = Some(entry_idx);
-                if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
-                    self.log_viewer.scroll_to_row = Some(row);
-                } else {
-                    self.status_message = "Bookmarked entry is hidden by the active filter".to_string();
-                }
-            }
-        }
-
-        // Central log viewer
-        let find_pattern = self.find.regex.as_ref();
-        let current_find_row = if self.find.active && !self.find.match_indices.is_empty() {
-            self.find.match_indices.get(self.find.current_match).copied()
-        } else {
-            None
-        };
-        let show_context_button = self.saved_filter_bar.is_none() && self.filter_bar.is_active();
-        let in_context_mode = self.saved_filter_bar.is_some();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.log_viewer.show(ui, &self.log_store, &self.filtered_indices, &self.filter, find_pattern, current_find_row, show_context_button, in_context_mode, &self.bookmarks);
-        });
+        let lines: Vec<String> = entries.iter()
+            .map(|e| format!("{} {} [{}] {}", e.timestamp, e.service, e.priority, e.message))
+            .collect();
+        let _ = std::fs::write(&path, lines.join("\n"));
+        self.status = format!("Saved {} entries to {}", entries.len(), path);
     }
 }

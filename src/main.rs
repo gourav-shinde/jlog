@@ -5,28 +5,46 @@ mod journalctl;
 mod ui;
 mod workers;
 
-use app::JlogApp;
+use std::io;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
-fn main() -> eframe::Result<()> {
-    #[cfg(target_os = "linux")]
-    if std::env::var("WINIT_UNIX_BACKEND").is_err() {
-        // SAFETY: called at program start before any other threads are spawned.
-        // Default to X11 for stability on WSL2/WSLg; users can override with
-        // WINIT_UNIX_BACKEND=wayland for native Wayland.
-        unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "x11") };
+fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
+    let mut pending_file = None;
+    let mut pending_ssh_profile = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("Usage: jlog [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  -f, --file <PATH>       Open a log file directly");
+                println!("  -p, --profile <NAME>    Connect using a saved SSH profile");
+                println!("  -h, --help              Print this help message");
+                return Ok(());
+            }
+            "-f" | "--file" => pending_file = args.next(),
+            "-p" | "--profile" => pending_ssh_profile = args.next(),
+            _ => {}
+        }
     }
 
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 800.0])
-            .with_title("jlog - Log Viewer")
-            ,
-        ..Default::default()
-    };
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    eframe::run_native(
-        "jlog",
-        options,
-        Box::new(|cc| Ok(Box::new(JlogApp::new(cc)))),
-    )
+    let result = app::App::new(pending_file, pending_ssh_profile).run(&mut terminal);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
 }
