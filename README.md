@@ -2,26 +2,50 @@
 
 Native desktop log viewer for journalctl/syslog logs. Open local log files or SSH to a remote server and stream `journalctl` output live.
 
-## Build
+## Install
 
-Requires OpenSSL dev libraries (`libssl-dev` on Debian/Ubuntu).
+### Pre-built binary (no Rust required)
+
+```bash
+git clone https://github.com/gourav-shinde/jlog.git
+cd jlog
+sudo ./install.sh
+```
+
+`install.sh` will download the latest pre-built binary from GitHub Releases if available, otherwise build from source. It installs to `/opt/jlog` and adds it to your PATH.
+
+To uninstall:
+
+```bash
+sudo ./uninstall.sh
+```
+
+### Build from source
+
+Requires Rust and OpenSSL dev libraries (`libssl-dev` on Debian/Ubuntu).
 
 ```bash
 cargo build --release
+./target/release/jlog
 ```
 
 ## Usage
 
 ```bash
 # Launch empty, then use File > Open File or SSH > Connect SSH
-./target/release/jlog
+jlog
 
 # Open a log file directly
-./target/release/jlog path/to/logfile.log
+jlog -f /path/to/logfile.log
+jlog --file /path/to/logfile.log
 
 # Connect to a saved SSH profile directly
-./target/release/jlog --profile "myserver"
-./target/release/jlog -p myserver
+jlog -p myserver
+jlog --profile myserver
+
+# Show help
+jlog -h
+jlog --help
 ```
 
 SSH profiles are managed via SSH > Connect SSH and saved to `~/.config/jlog/profiles.json`.
@@ -37,6 +61,9 @@ On WSL2, the app uses X11 by default. Override with `WINIT_UNIX_BACKEND=wayland`
 - Virtual-scrolling log table (handles 100k+ entries)
 - Regex match highlighting in messages
 - Quick-pattern buttons for common searches (errors, warnings, SSH, kernel, systemd)
+- Bookmark entries (B key or right-click) and navigate via the bookmark timeline (Ctrl+B)
+- "Always show bookmarks" setting to pin bookmarked entries through active filters
+- Auto-save logs on SSH disconnect
 
 ## Supported Formats
 
