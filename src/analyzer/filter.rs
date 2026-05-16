@@ -64,11 +64,8 @@ impl FilterCriteria {
                 }
             }
             CombineMode::Not => {
-                if self.pattern.is_some() {
-                    !self.pattern.as_ref().unwrap().is_match(&entry.message)
-                } else {
-                    true
-                }
+                self.pattern.as_ref()
+                    .map_or(true, |r| !r.is_match(&entry.message))
             }
         }
     }

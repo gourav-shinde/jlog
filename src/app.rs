@@ -300,8 +300,10 @@ impl JlogApp {
         self.find.current_match = 0;
         if let Some(ref re) = self.find.regex {
             for (row_idx, &entry_idx) in self.filtered_indices.iter().enumerate() {
-                if re.is_match(&self.log_store.entries[entry_idx].message) {
-                    self.find.match_indices.push(row_idx);
+                if let Some(entry) = self.log_store.entries.get(entry_idx) {
+                    if re.is_match(&entry.message) {
+                        self.find.match_indices.push(row_idx);
+                    }
                 }
             }
         }
@@ -920,6 +922,8 @@ impl eframe::App for JlogApp {
                 self.log_viewer.selected_entry = Some(entry_idx);
                 if let Some(row) = self.filtered_indices.iter().position(|&i| i == entry_idx) {
                     self.log_viewer.scroll_to_row = Some(row);
+                } else {
+                    self.status_message = "Bookmarked entry is hidden by the active filter".to_string();
                 }
             }
         }
