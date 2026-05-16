@@ -273,6 +273,79 @@ impl JlogApp {
         }
     }
 
+    fn export_filtered(&mut self) {
+        if self.filtered_indices.is_empty() {
+            self.status_message = "Nothing to export — no entries match the current filter".to_string();
+            return;
+        }
+
+        let default_name = format!(
+            "jlog_export_{}.log",
+            chrono::Local::now().format("%Y%m%d_%H%M%S")
+        );
+
+        let path = rfd::FileDialog::new()
+            .set_title("Export Filtered Logs")
+            .set_file_name(&default_name)
+            .add_filter("Log file", &["log"])
+            .add_filter("JSON Lines", &["jsonl", "json"])
+            .add_filter("All files", &["*"])
+            .save_file();
+
+        if let Some(path) = path {
+            let entries: Vec<&crate::analyzer::LogEntry> = self.filtered_indices
+                .iter()
+                .map(|&i| &self.log_store.entries[i])
+                .collect();
+
+            let use_json = path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e == "json" || e == "jsonl")
+                .unwrap_or(false);
+
+            let result = if use_json {
+                self.write_export_json(&path, &entries)
+            } else {
+                self.write_export_plain(&path, &entries)
+            };
+
+            match result {
+                Ok(()) => self.status_message = format!(
+                    "Exported {} entries to {}",
+                    entries.len(),
+                    path.display()
+                ),
+                Err(e) => self.status_message = format!("Export error: {}", e),
+            }
+        }
+    }
+
+    fn write_export_plain(&self, path: &std::path::Path, entries: &[&crate::analyzer::LogEntry]) -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+        for entry in entries {
+            writeln!(file, "{} {}[{}]: {}", entry.timestamp, entry.service, entry.priority, entry.message)?;
+        }
+        Ok(())
+    }
+
+    fn write_export_json(&self, path: &std::path::Path, entries: &[&crate::analyzer::LogEntry]) -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+        for entry in entries {
+            let obj = serde_json::json!({
+                "line": entry.line_num,
+                "timestamp": entry.timestamp,
+                "priority": entry.priority,
+                "service": entry.service,
+                "message": entry.message,
+            });
+            serde_json::to_writer(&mut file, &obj)?;
+            writeln!(file)?;
+        }
+        Ok(())
+    }
+
     fn save_now(&mut self) {
         let entries: Vec<&crate::analyzer::LogEntry> = if self.save_settings.save_filtered_only {
             self.filtered_indices
@@ -526,6 +599,14 @@ impl eframe::App for JlogApp {
                     if ui.button("Save Logs Now").clicked() {
                         ui.close_menu();
                         self.save_now();
+                    }
+                    let export_label = format!(
+                        "Export Filtered Logs ({})...",
+                        self.filtered_indices.len()
+                    );
+                    if ui.button(export_label).clicked() {
+                        ui.close_menu();
+                        self.export_filtered();
                     }
                     if ui.button("Save Settings...").clicked() {
                         ui.close_menu();
