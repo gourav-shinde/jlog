@@ -75,13 +75,23 @@ impl JlogApp {
         let mut pending_file = None;
         let mut pending_ssh_profile = None;
         while let Some(arg) = args.next() {
-            if arg == "--profile" || arg == "-p" {
-                pending_ssh_profile = args.next();
-            } else if pending_file.is_none() {
-                let path = std::path::Path::new(&arg);
-                if path.exists() && path.is_file() {
-                    pending_file = Some(arg);
+            match arg.as_str() {
+                "-h" | "--help" => {
+                    println!("Usage: jlog [OPTIONS]");
+                    println!();
+                    println!("Options:");
+                    println!("  -f, --file <PATH>       Open a log file directly");
+                    println!("  -p, --profile <NAME>    Connect using a saved SSH profile");
+                    println!("  -h, --help              Print this help message");
+                    std::process::exit(0);
                 }
+                "-f" | "--file" => {
+                    pending_file = args.next();
+                }
+                "-p" | "--profile" => {
+                    pending_ssh_profile = args.next();
+                }
+                _ => {}
             }
         }
 
