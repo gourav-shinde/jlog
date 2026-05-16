@@ -180,6 +180,8 @@ impl JlogApp {
         self.total_lines = 0;
         self.filter_bar = FilterBar::default();
         self.filter = FilterCriteria::default();
+        self.bookmarks.clear();
+        self.show_bookmarks = false;
     }
 
     fn process_messages(&mut self) {
