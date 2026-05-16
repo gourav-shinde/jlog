@@ -91,7 +91,16 @@ try_download || build_from_source
 # --- Install ---
 info "Installing to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
-cp "$BINARY_PATH" "$INSTALL_DIR/$BINARY_NAME"
+cp "$BINARY_PATH" "$INSTALL_DIR/$BINARY_NAME.bin"
+chmod +x "$INSTALL_DIR/$BINARY_NAME.bin"
+
+# Wrapper script to suppress benign WSL2/X11 teardown noise
+cat > "$INSTALL_DIR/$BINARY_NAME" <<'WRAPPER'
+#!/usr/bin/env bash
+# Filter out benign WSL2/WSLg X11 escape code messages printed on window close.
+exec "$INSTALL_DIR_PLACEHOLDER/jlog.bin" "$@" 2> >(grep -v "Dropped Escape call" >&2)
+WRAPPER
+sed -i "s|INSTALL_DIR_PLACEHOLDER|$INSTALL_DIR|g" "$INSTALL_DIR/$BINARY_NAME"
 chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
 # --- Update shell rc ---
@@ -124,7 +133,8 @@ fi
 ln -sf "$INSTALL_DIR/$BINARY_NAME" /usr/local/bin/$BINARY_NAME
 
 echo ""
-echo -e "  Binary   : ${GREEN}$INSTALL_DIR/$BINARY_NAME${NC}"
+echo -e "  Binary   : ${GREEN}$INSTALL_DIR/$BINARY_NAME.bin${NC}"
+echo -e "  Wrapper  : ${GREEN}$INSTALL_DIR/$BINARY_NAME${NC} (filters WSL2 X11 noise)"
 echo -e "  Symlink  : ${GREEN}/usr/local/bin/$BINARY_NAME${NC}"
 echo -e "  Shell RC : ${GREEN}$SHELL_RC${NC}"
 echo ""
