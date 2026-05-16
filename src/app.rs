@@ -305,8 +305,9 @@ impl JlogApp {
 
     fn apply_filter(&mut self) {
         self.filtered_indices.clear();
+        let pin_bookmarks = self.save_settings.always_show_bookmarks;
         for (i, entry) in self.log_store.entries.iter().enumerate() {
-            if self.filter.matches(entry) {
+            if self.filter.matches(entry) || (pin_bookmarks && self.bookmarks.contains(&i)) {
                 self.filtered_indices.push(i);
             }
         }

@@ -14,6 +14,7 @@ pub struct SaveSettings {
     pub format: SaveFormat,
     pub auto_save: bool,
     pub save_filtered_only: bool,
+    pub always_show_bookmarks: bool,
 }
 
 impl Default for SaveSettings {
@@ -28,6 +29,7 @@ impl Default for SaveSettings {
             format: SaveFormat::PlainText,
             auto_save: true,
             save_filtered_only: false,
+            always_show_bookmarks: false,
         }
     }
 }
@@ -87,6 +89,7 @@ pub struct SaveSettingsDialog {
     format: SaveFormat,
     auto_save: bool,
     save_filtered_only: bool,
+    always_show_bookmarks: bool,
 }
 
 impl Default for SaveSettingsDialog {
@@ -99,6 +102,7 @@ impl Default for SaveSettingsDialog {
             format: defaults.format,
             auto_save: defaults.auto_save,
             save_filtered_only: defaults.save_filtered_only,
+            always_show_bookmarks: defaults.always_show_bookmarks,
         }
     }
 }
@@ -110,6 +114,7 @@ impl SaveSettingsDialog {
         self.format = settings.format.clone();
         self.auto_save = settings.auto_save;
         self.save_filtered_only = settings.save_filtered_only;
+        self.always_show_bookmarks = settings.always_show_bookmarks;
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<SaveSettings> {
@@ -160,6 +165,7 @@ impl SaveSettingsDialog {
                 ui.separator();
                 ui.checkbox(&mut self.auto_save, "Auto-save on SSH disconnect");
                 ui.checkbox(&mut self.save_filtered_only, "Save filtered entries only");
+                ui.checkbox(&mut self.always_show_bookmarks, "Always show bookmarks when filtering");
 
                 ui.separator();
                 // Live preview
@@ -169,6 +175,7 @@ impl SaveSettingsDialog {
                     format: self.format.clone(),
                     auto_save: self.auto_save,
                     save_filtered_only: self.save_filtered_only,
+                    always_show_bookmarks: self.always_show_bookmarks,
                 };
                 let preview_path = preview.resolve_filename("example-host");
                 ui.horizontal(|ui| {
