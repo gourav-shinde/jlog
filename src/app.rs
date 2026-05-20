@@ -13,11 +13,11 @@ use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, 
 use crate::workers::{file_reader, log_writer, ssh_reader};
 
 fn read_memory_kb() -> u64 {
-    std::fs::read_to_string("/proc/self/status")
+    std::fs::read_to_string("/proc/self/smaps_rollup")
         .ok()
         .and_then(|s| {
             s.lines()
-                .find(|l| l.starts_with("VmRSS:"))
+                .find(|l| l.starts_with("Pss:"))
                 .and_then(|l| l.split_whitespace().nth(1))
                 .and_then(|v| v.parse().ok())
         })
@@ -896,7 +896,7 @@ impl eframe::App for JlogApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(format!("Mem: {} MB", self.memory_kb / 1024))
+                        egui::RichText::new(format!("PSS: {} MB", self.memory_kb / 1024))
                             .color(egui::Color32::from_rgb(130, 130, 130)),
                     );
                 });
