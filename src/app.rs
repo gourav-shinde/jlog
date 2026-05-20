@@ -42,6 +42,7 @@ pub struct JlogApp {
     is_connected: bool,
     status_message: String,
     total_lines: usize,
+    cached_services: Vec<String>,
 
     save_settings: SaveSettings,
     save_settings_dialog: SaveSettingsDialog,
@@ -114,6 +115,7 @@ impl JlogApp {
             is_connected: false,
             status_message: "Ready - File > Open or Connect SSH".to_string(),
             total_lines: 0,
+            cached_services: Vec::new(),
 
             save_settings: load_settings(),
             save_settings_dialog: SaveSettingsDialog::default(),
@@ -191,6 +193,7 @@ impl JlogApp {
         self.is_loading = false;
         self.is_connected = false;
         self.total_lines = 0;
+        self.cached_services.clear();
         self.filter_bar = FilterBar::default();
         self.filter = FilterCriteria::default();
         self.bookmarks.clear();
@@ -270,6 +273,9 @@ impl JlogApp {
             let new_count = self.log_store.entries.len() - entries_before;
             self.log_viewer.notify_new_entries(new_count);
             self.extend_filter();
+            if self.log_store.services.len() != self.cached_services.len() {
+                self.cached_services = self.log_store.service_names();
+            }
         }
     }
 
@@ -428,8 +434,13 @@ impl eframe::App for JlogApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Always repaint — prevents stale frame artifacts on resize/maximize (WSL2/X11)
-        ctx.request_repaint();
+        // Poll background worker at 50 ms when active; low-frequency heartbeat
+        // when idle to handle WSL2/X11 resize artifacts without burning full 60 fps.
+        if self.bg_receiver.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
 
         // Load file from CLI argument on first frame
         if let Some(path) = self.pending_file.take() {
@@ -666,8 +677,7 @@ impl eframe::App for JlogApp {
 
         // Filter bar panel
         egui::TopBottomPanel::top("filter_bar").show(ctx, |ui| {
-            let services = self.log_store.service_names();
-            if self.filter_bar.show(ui, &services, &mut self.filter) {
+            if self.filter_bar.show(ui, &self.cached_services, &mut self.filter) {
                 self.apply_filter();
             }
         });

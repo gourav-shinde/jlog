@@ -48,6 +48,8 @@ pub struct LogViewer {
     pub show_in_context_requested: bool,
     /// Entry index to toggle bookmark for; consumed by app.
     pub toggle_bookmark_requested: Option<usize>,
+    /// Cached pretty-printed JSON for the selected entry: (entry_idx, pretty_or_none).
+    cached_pretty: Option<(usize, Option<String>)>,
 }
 
 impl Default for LogViewer {
@@ -60,6 +62,7 @@ impl Default for LogViewer {
             scroll_to_row: None,
             show_in_context_requested: false,
             toggle_bookmark_requested: None,
+            cached_pretty: None,
         }
     }
 }
@@ -122,6 +125,20 @@ impl LogViewer {
 
         // Detail panel at the bottom when a row is selected
         if let Some(entry_idx) = self.selected_entry {
+            // Recompute the JSON pretty-print only when the selection changes.
+            match self.cached_pretty {
+                Some((cached_idx, _)) if cached_idx == entry_idx => {}
+                _ => {
+                    self.cached_pretty = store.entries.get(entry_idx)
+                        .map(|e| (entry_idx, try_pretty_json(&e.message)));
+                }
+            }
+            // Clone the cached result so the closure below can own it without
+            // holding a borrow on `self`.
+            let pretty_msg: Option<String> = self.cached_pretty
+                .as_ref()
+                .and_then(|(_, p)| p.clone());
+
             if let Some(entry) = store.entries.get(entry_idx) {
                 egui::TopBottomPanel::bottom("detail_panel")
                     .resizable(true)
@@ -174,10 +191,10 @@ impl LogViewer {
                                 ui.separator();
                                 ui.label(egui::RichText::new("Message:").strong());
 
-                                if let Some(pretty) = try_pretty_json(&entry.message) {
+                                if let Some(ref pretty) = pretty_msg {
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(&pretty)
+                                            egui::RichText::new(pretty.as_str())
                                                 .monospace()
                                                 .color(egui::Color32::from_rgb(180, 230, 140)),
                                         )
@@ -246,6 +263,10 @@ impl LogViewer {
                 let mut new_selection = self.selected_entry;
                 let mut bookmark_toggle: Option<usize> = None;
 
+                // Reused across rows to avoid per-row heap allocations.
+                let mut spans_buf: Vec<(usize, usize, bool)> = Vec::new();
+                let mut hl_buf: Vec<u8> = Vec::new();
+
                 let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_idx in row_range {
                         let entry_idx = filtered_indices[row_idx];
@@ -255,7 +276,7 @@ impl LogViewer {
                         let is_bookmarked = bookmarks.contains(&entry_idx);
 
                         let is_context_highlight = in_context_mode && is_selected;
-                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find, is_context_highlight, is_bookmarked);
+                        let resp = self.render_row(ui, entry, row_height, filter, is_selected, find_pattern, is_current_find, is_context_highlight, is_bookmarked, &mut spans_buf, &mut hl_buf);
                         if resp.clicked() {
                             new_selection = if is_selected { None } else { Some(entry_idx) };
                         }
@@ -330,6 +351,8 @@ impl LogViewer {
         is_current_find: bool,
         is_context_highlight: bool,
         is_bookmarked: bool,
+        spans_buf: &mut Vec<(usize, usize, bool)>,
+        hl_buf: &mut Vec<u8>,
     ) -> egui::Response {
         let pri_color = priority_color(entry.priority);
         let widths = [60.0, 160.0, 60.0, 150.0];
@@ -373,22 +396,20 @@ impl LogViewer {
                 let mut job = egui::text::LayoutJob::default();
 
                 // Collect all highlight spans: (start, end, is_find)
-                let mut spans: Vec<(usize, usize, bool)> = Vec::new();
+                spans_buf.clear();
                 if let Some(ref regex) = filter.pattern {
                     for m in regex.find_iter(msg) {
-                        spans.push((m.start(), m.end(), false));
+                        spans_buf.push((m.start(), m.end(), false));
                     }
                 }
                 if let Some(find_re) = find_pattern {
                     for m in find_re.find_iter(msg) {
-                        spans.push((m.start(), m.end(), true));
+                        spans_buf.push((m.start(), m.end(), true));
                     }
                 }
                 // Sort by start; find highlights take priority (rendered on top)
-                spans.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
+                spans_buf.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
 
-                // Merge overlapping spans, keeping track of highlight type
-                // Simple approach: iterate char by char through highlight ranges
                 let default_fmt = egui::TextFormat {
                     font_id: egui::FontId::monospace(13.0),
                     color: egui::Color32::from_rgb(220, 220, 220),
@@ -409,13 +430,14 @@ impl LogViewer {
 
                 // Build a per-byte highlight type: 0=none, 1=filter, 2=find
                 let len = msg.len();
-                let mut hl = vec![0u8; len];
-                for &(start, end, is_find) in &spans {
+                hl_buf.clear();
+                hl_buf.resize(len, 0);
+                for &(start, end, is_find) in spans_buf.iter() {
                     for b in start..end.min(len) {
                         if is_find {
-                            hl[b] = 2;
-                        } else if hl[b] == 0 {
-                            hl[b] = 1;
+                            hl_buf[b] = 2;
+                        } else if hl_buf[b] == 0 {
+                            hl_buf[b] = 1;
                         }
                     }
                 }
@@ -423,14 +445,12 @@ impl LogViewer {
                 // Emit runs of same highlight type
                 let mut i = 0;
                 while i < len {
-                    // Find char boundary
                     if !msg.is_char_boundary(i) { i += 1; continue; }
-                    let kind = hl[i];
+                    let kind = hl_buf[i];
                     let run_start = i;
-                    while i < len && hl[i] == kind {
+                    while i < len && hl_buf[i] == kind {
                         i += 1;
                     }
-                    // Snap to char boundary
                     while i < len && !msg.is_char_boundary(i) { i += 1; }
                     let fmt = match kind {
                         1 => &filter_fmt,
