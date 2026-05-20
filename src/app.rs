@@ -12,6 +12,18 @@ use crate::ui::open_file_dialog::OpenFileDialog;
 use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
 use crate::workers::{file_reader, log_writer, ssh_reader};
 
+fn read_memory_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 struct FindState {
     active: bool,
     search_text: String,
@@ -68,6 +80,9 @@ pub struct JlogApp {
     bookmarks: HashSet<usize>,
     /// Whether the bookmark/timeline window is open
     show_bookmarks: bool,
+
+    memory_kb: u64,
+    last_memory_check: std::time::Instant,
 }
 
 impl JlogApp {
@@ -142,6 +157,9 @@ impl JlogApp {
 
             bookmarks: HashSet::new(),
             show_bookmarks: false,
+
+            memory_kb: read_memory_kb(),
+            last_memory_check: std::time::Instant::now(),
         }
     }
 
@@ -440,6 +458,12 @@ impl eframe::App for JlogApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_memory_check).as_secs() >= 1 {
+            self.memory_kb = read_memory_kb();
+            self.last_memory_check = now;
         }
 
         // Load file from CLI argument on first frame
@@ -869,6 +893,13 @@ impl eframe::App for JlogApp {
                     self.filtered_indices.len(),
                     self.log_store.entries.len()
                 ));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Mem: {} MB", self.memory_kb / 1024))
+                            .color(egui::Color32::from_rgb(130, 130, 130)),
+                    );
+                });
             });
         });
 
