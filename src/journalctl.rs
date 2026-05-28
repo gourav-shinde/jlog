@@ -43,11 +43,10 @@ impl JournalEntry {
         self.message.as_deref().unwrap_or("")
     }
 
-    pub fn timestamp_secs(&self) -> Option<i64> {
+    pub fn timestamp_micros(&self) -> Option<i64> {
         self.realtime_timestamp
             .as_ref()
             .and_then(|ts| ts.parse::<i64>().ok())
-            .map(|us| us / 1_000_000)
     }
 
     pub fn from_syslog_line(line: &str) -> Option<Self> {

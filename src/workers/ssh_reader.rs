@@ -143,10 +143,17 @@ fn parse_ssh_line(line: &str, parse_errors: &mut usize) -> Option<JournalEntry> 
 }
 
 fn journal_to_log_entry(line_num: usize, entry: &JournalEntry) -> LogEntry {
-    let timestamp = entry.timestamp_secs()
-        .and_then(|secs| {
-            chrono::DateTime::from_timestamp(secs, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+    let timestamp = entry.timestamp_micros()
+        .and_then(|us| {
+            let secs = us / 1_000_000;
+            let nsecs = ((us % 1_000_000) * 1_000) as u32;
+            chrono::DateTime::from_timestamp(secs, nsecs).map(|dt| {
+                if nsecs == 0 {
+                    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                } else {
+                    dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+                }
+            })
         })
         .unwrap_or_default();
 
