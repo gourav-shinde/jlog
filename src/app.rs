@@ -297,6 +297,48 @@ impl JlogApp {
         }
     }
 
+    fn handle_resize_edges(&self, ctx: &egui::Context) {
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if maximized { return; }
+
+        let rect = ctx.screen_rect();
+        let grip = 8.0;
+
+        let (hover_pos, down, delta) = ctx.input(|i| (
+            i.pointer.hover_pos(),
+            i.pointer.primary_down(),
+            i.pointer.delta(),
+        ));
+
+        if let Some(pos) = hover_pos {
+            let north = pos.y <= rect.min.y + grip;
+            let south = pos.y >= rect.max.y - grip;
+            let west  = pos.x <= rect.min.x + grip;
+            let east  = pos.x >= rect.max.x - grip;
+
+            use egui::viewport::ResizeDirection::*;
+            let (dir, cursor) = match (north, south, west, east) {
+                (true,  _,     true,  _    ) => (Some(NorthWest), egui::CursorIcon::ResizeNwSe),
+                (true,  _,     _,     true ) => (Some(NorthEast), egui::CursorIcon::ResizeNeSw),
+                (_,     true,  true,  _    ) => (Some(SouthWest), egui::CursorIcon::ResizeNeSw),
+                (_,     true,  _,     true ) => (Some(SouthEast), egui::CursorIcon::ResizeNwSe),
+                (true,  _,     _,     _    ) => (Some(North),     egui::CursorIcon::ResizeNorth),
+                (_,     true,  _,     _    ) => (Some(South),     egui::CursorIcon::ResizeSouth),
+                (_,     _,     true,  _    ) => (Some(West),      egui::CursorIcon::ResizeWest),
+                (_,     _,     _,     true ) => (Some(East),      egui::CursorIcon::ResizeEast),
+                _                            => (None,             egui::CursorIcon::Default),
+            };
+
+            if let Some(direction) = dir {
+                ctx.set_cursor_icon(cursor);
+                // Trigger resize when mouse is held and has started moving from the edge
+                if down && delta != egui::Vec2::ZERO {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            }
+        }
+    }
+
     fn show_title_bar(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let drag_response = ui.interact(
             ui.max_rect(),
@@ -311,11 +353,13 @@ impl JlogApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
         }
 
+        let dark = egui::Color32::from_rgb(30, 30, 30);
+
         ui.horizontal_centered(|ui| {
             ui.add_space(8.0);
-            ui.strong("jlog");
+            ui.label(egui::RichText::new("jlog").strong().color(dark));
             if self.current_host != "local" && !self.current_host.is_empty() {
-                ui.label(format!("— {}", self.current_host));
+                ui.label(egui::RichText::new(format!("— {}", self.current_host)).color(dark));
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -328,11 +372,11 @@ impl JlogApp {
 
                 let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                 let max_icon = if maximized { "❐" } else { "▢" };
-                if ui.add(egui::Button::new(max_icon).frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
+                if ui.add(egui::Button::new(egui::RichText::new(max_icon).color(dark)).frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                 }
 
-                if ui.add(egui::Button::new("−").frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
+                if ui.add(egui::Button::new(egui::RichText::new("−").color(dark)).frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
             });
@@ -465,6 +509,8 @@ impl eframe::App for JlogApp {
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
+
+        self.handle_resize_edges(ctx);
 
         let now = std::time::Instant::now();
         if now.duration_since(self.last_memory_check).as_secs() >= 1 {
@@ -631,6 +677,7 @@ impl eframe::App for JlogApp {
         // Custom title bar (replaces OS decorations)
         egui::TopBottomPanel::top("title_bar")
             .exact_height(28.0)
+            .frame(egui::Frame::default().fill(egui::Color32::from_rgb(220, 220, 220)))
             .show(ctx, |ui| {
                 self.show_title_bar(ui, ctx);
             });
