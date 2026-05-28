@@ -404,7 +404,7 @@ impl JlogApp {
 
 impl eframe::App for JlogApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if self.save_settings.auto_save && !self.log_store.entries.is_empty() {
+        if self.save_settings.auto_save && self.current_host != "local" && !self.log_store.entries.is_empty() {
             self.save_now();
         }
     }
