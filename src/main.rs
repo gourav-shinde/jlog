@@ -20,7 +20,7 @@ fn main() -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_title("jlog - Log Viewer")
-            ,
+            .with_decorations(false),
         ..Default::default()
     };
 

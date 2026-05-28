@@ -297,6 +297,48 @@ impl JlogApp {
         }
     }
 
+    fn show_title_bar(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let drag_response = ui.interact(
+            ui.max_rect(),
+            ui.id().with("title_bar_drag"),
+            egui::Sense::click_and_drag(),
+        );
+        if drag_response.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if drag_response.double_clicked() {
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+
+        ui.horizontal_centered(|ui| {
+            ui.add_space(8.0);
+            ui.strong("jlog");
+            if self.current_host != "local" && !self.current_host.is_empty() {
+                ui.label(format!("— {}", self.current_host));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(4.0);
+
+                let close_btn = ui.add(egui::Button::new(egui::RichText::new("✕").color(egui::Color32::from_rgb(196, 43, 28))).frame(false).min_size(egui::vec2(24.0, 24.0)));
+                if close_btn.clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+
+                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                let max_icon = if maximized { "❐" } else { "▢" };
+                if ui.add(egui::Button::new(max_icon).frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+
+                if ui.add(egui::Button::new("−").frame(false).min_size(egui::vec2(24.0, 24.0))).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            });
+        });
+    }
+
     fn export_filtered(&mut self) {
         if self.filtered_indices.is_empty() {
             self.status_message = "Nothing to export — no entries match the current filter".to_string();
@@ -585,6 +627,13 @@ impl eframe::App for JlogApp {
                 });
             self.show_help = open;
         }
+
+        // Custom title bar (replaces OS decorations)
+        egui::TopBottomPanel::top("title_bar")
+            .exact_height(28.0)
+            .show(ctx, |ui| {
+                self.show_title_bar(ui, ctx);
+            });
 
         // Top menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
