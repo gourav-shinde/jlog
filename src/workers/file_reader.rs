@@ -22,8 +22,9 @@ struct SavedJsonEntry {
 
 /// Matches the plaintext format written by log_writer::save_logs():
 /// "2026-02-11 10:30:45 sshd[6]: message"
+/// "2026-02-11 10:30:45.123456 sshd[6]: message"
 static SAVED_PLAINTEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\[(\d+)\]:\s*(.*)$").unwrap()
+    Regex::new(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\S+)\[(\d+)\]:\s*(.*)$").unwrap()
 });
 
 pub fn read_file(path: String, tx: Sender<BackgroundMessage>) {
@@ -135,6 +136,54 @@ fn parse_saved_line(line: &str, line_num: usize) -> Option<LogEntry> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plaintext_seconds_precision() {
+        let entry = parse_saved_line("2026-02-11 10:30:45 sshd[6]: Connected", 1).unwrap();
+        assert_eq!(entry.timestamp, "2026-02-11 10:30:45");
+        assert_eq!(entry.service, "sshd");
+        assert_eq!(entry.priority, 6);
+        assert_eq!(entry.message, "Connected");
+    }
+
+    #[test]
+    fn plaintext_microsecond_precision() {
+        let entry = parse_saved_line("2026-02-11 10:30:45.123456 sshd[6]: Connected", 1).unwrap();
+        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.123456");
+        assert_eq!(entry.service, "sshd");
+        assert_eq!(entry.priority, 6);
+        assert_eq!(entry.message, "Connected");
+    }
+
+    #[test]
+    fn plaintext_empty_message() {
+        let entry = parse_saved_line("2026-02-11 10:30:45.000001 kernel[3]: ", 2).unwrap();
+        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.000001");
+        assert_eq!(entry.service, "kernel");
+        assert_eq!(entry.priority, 3);
+        assert_eq!(entry.message, "");
+    }
+
+    #[test]
+    fn saved_json_roundtrip() {
+        let line = r#"{"line":1,"timestamp":"2026-02-11 10:30:45.123456","priority":6,"service":"sshd","message":"Connected"}"#;
+        let entry = parse_saved_line(line, 5).unwrap();
+        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.123456");
+        assert_eq!(entry.service, "sshd");
+        assert_eq!(entry.priority, 6);
+        assert_eq!(entry.message, "Connected");
+    }
+
+    #[test]
+    fn garbage_line_returns_none() {
+        assert!(parse_saved_line("not a log line at all", 1).is_none());
+        assert!(parse_saved_line("", 1).is_none());
+    }
 }
 
 fn journal_to_log_entry(line_num: usize, entry: &JournalEntry) -> LogEntry {
