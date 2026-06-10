@@ -308,44 +308,59 @@ impl JlogApp {
         let rect = ctx.screen_rect();
         let grip = 8.0;
 
-        let (hover_pos, down, delta) = ctx.input(|i| (
-            i.pointer.hover_pos(),
-            i.pointer.primary_down(),
-            i.pointer.delta(),
-        ));
-
-        if let Some(pos) = hover_pos {
+        // Classify a screen point into an optional resize direction + the
+        // cursor that should be shown for it.
+        let classify = |pos: egui::Pos2| {
             let north = pos.y <= rect.min.y + grip;
             let south = pos.y >= rect.max.y - grip;
             let west  = pos.x <= rect.min.x + grip;
             let east  = pos.x >= rect.max.x - grip;
 
             use egui::viewport::ResizeDirection::*;
-            let (dir, cursor) = match (north, south, west, east) {
-                (true,  _,     true,  _    ) => (Some(NorthWest), egui::CursorIcon::ResizeNwSe),
-                (true,  _,     _,     true ) => (Some(NorthEast), egui::CursorIcon::ResizeNeSw),
-                (_,     true,  true,  _    ) => (Some(SouthWest), egui::CursorIcon::ResizeNeSw),
-                (_,     true,  _,     true ) => (Some(SouthEast), egui::CursorIcon::ResizeNwSe),
-                (true,  _,     _,     _    ) => (Some(North),     egui::CursorIcon::ResizeNorth),
-                (_,     true,  _,     _    ) => (Some(South),     egui::CursorIcon::ResizeSouth),
-                (_,     _,     true,  _    ) => (Some(West),      egui::CursorIcon::ResizeWest),
-                (_,     _,     _,     true ) => (Some(East),      egui::CursorIcon::ResizeEast),
-                _                            => (None,             egui::CursorIcon::Default),
-            };
+            match (north, south, west, east) {
+                (true,  _,     true,  _    ) => Some((NorthWest, egui::CursorIcon::ResizeNwSe)),
+                (true,  _,     _,     true ) => Some((NorthEast, egui::CursorIcon::ResizeNeSw)),
+                (_,     true,  true,  _    ) => Some((SouthWest, egui::CursorIcon::ResizeNeSw)),
+                (_,     true,  _,     true ) => Some((SouthEast, egui::CursorIcon::ResizeNwSe)),
+                (true,  _,     _,     _    ) => Some((North,     egui::CursorIcon::ResizeNorth)),
+                (_,     true,  _,     _    ) => Some((South,     egui::CursorIcon::ResizeSouth)),
+                (_,     _,     true,  _    ) => Some((West,      egui::CursorIcon::ResizeWest)),
+                (_,     _,     _,     true ) => Some((East,      egui::CursorIcon::ResizeEast)),
+                _                            => None,
+            }
+        };
 
-            if let Some(direction) = dir {
-                ctx.set_cursor_icon(cursor);
-                // Trigger resize when mouse is held and has started moving from the edge
-                if down && delta != egui::Vec2::ZERO {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
-                }
+        let (hover_pos, pressed, press_origin) = ctx.input(|i| (
+            i.pointer.hover_pos(),
+            i.pointer.primary_pressed(),
+            i.pointer.press_origin(),
+        ));
+
+        // Show the resize cursor only while hovering an actual edge.
+        if let Some((_, cursor)) = hover_pos.and_then(classify) {
+            ctx.set_cursor_icon(cursor);
+        }
+
+        // Begin a resize only when the press *originated* on an edge. Checking
+        // the press origin (rather than the live pointer) prevents a window
+        // move started on the title bar from turning into a resize when the
+        // pointer crosses the top edge mid-drag.
+        if pressed {
+            if let Some((direction, _)) = press_origin.and_then(classify) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
             }
         }
     }
 
     fn show_title_bar(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Reserve the top grip (matching handle_resize_edges) for the window
+        // resize handle so dragging the bar to move the window can't be hijacked
+        // by the top-edge resize zone.
+        let grip = 8.0;
+        let mut drag_rect = ui.max_rect();
+        drag_rect.min.y += grip;
         let drag_response = ui.interact(
-            ui.max_rect(),
+            drag_rect,
             ui.id().with("title_bar_drag"),
             egui::Sense::click_and_drag(),
         );

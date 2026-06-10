@@ -241,9 +241,14 @@ impl LogViewer {
 
                 ui.separator();
 
-                // Virtual-scrolling log table
+                // Virtual-scrolling log table.
+                // Width shrinks to content (the widest visible row) instead of
+                // filling the unbounded width offered by the outer horizontal
+                // ScrollArea. Using `false` here creates a layout feedback loop
+                // that makes the content jitter/resize while scrolling
+                // horizontally.
                 let mut scroll = egui::ScrollArea::vertical()
-                    .auto_shrink([false, false]);
+                    .auto_shrink([true, false]);
 
                 // Handle scroll-to-row: set initial offset before building scroll area
                 // Must be checked before stick_to_bottom to avoid conflict
