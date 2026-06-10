@@ -50,6 +50,10 @@ pub struct LogViewer {
     pub toggle_bookmark_requested: Option<usize>,
     /// Cached pretty-printed JSON for the selected entry: (entry_idx, pretty_or_none).
     cached_pretty: Option<(usize, Option<String>)>,
+    /// Detail panel: show the raw message instead of pretty-printed JSON.
+    detail_show_raw: bool,
+    /// Detail panel: word-wrap the message instead of single-line + scroll.
+    detail_wrap: bool,
 }
 
 impl Default for LogViewer {
@@ -63,6 +67,8 @@ impl Default for LogViewer {
             show_in_context_requested: false,
             toggle_bookmark_requested: None,
             cached_pretty: None,
+            detail_show_raw: false,
+            detail_wrap: true,
         }
     }
 }
@@ -75,6 +81,78 @@ fn try_pretty_json(s: &str) -> Option<String> {
     }
     let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
     serde_json::to_string_pretty(&value).ok()
+}
+
+/// Build a monospace `LayoutJob` for `text`, painting filter matches orange and
+/// find matches green (find takes priority where they overlap). Used by the
+/// detail panel; the row renderer has its own allocation-free variant.
+fn build_highlight_job(
+    text: &str,
+    filter: Option<&regex::Regex>,
+    find: Option<&regex::Regex>,
+    base_color: egui::Color32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontId::monospace(13.0);
+
+    let default_fmt = egui::TextFormat {
+        font_id: font.clone(),
+        color: base_color,
+        ..Default::default()
+    };
+
+    if filter.is_none() && find.is_none() {
+        job.append(text, 0.0, default_fmt);
+        return job;
+    }
+
+    // Per-byte highlight kind: 0 = none, 1 = filter, 2 = find.
+    let len = text.len();
+    let mut hl = vec![0u8; len];
+    if let Some(re) = filter {
+        for m in re.find_iter(text) {
+            for b in m.start()..m.end().min(len) {
+                if hl[b] == 0 { hl[b] = 1; }
+            }
+        }
+    }
+    if let Some(re) = find {
+        for m in re.find_iter(text) {
+            for b in m.start()..m.end().min(len) {
+                hl[b] = 2;
+            }
+        }
+    }
+
+    let filter_fmt = egui::TextFormat {
+        font_id: font.clone(),
+        color: egui::Color32::BLACK,
+        background: egui::Color32::from_rgb(255, 180, 50),
+        ..Default::default()
+    };
+    let find_fmt = egui::TextFormat {
+        font_id: font.clone(),
+        color: egui::Color32::BLACK,
+        background: egui::Color32::from_rgb(80, 200, 120),
+        ..Default::default()
+    };
+
+    // Emit runs of the same highlight kind, respecting char boundaries.
+    let mut i = 0;
+    while i < len {
+        if !text.is_char_boundary(i) { i += 1; continue; }
+        let kind = hl[i];
+        let start = i;
+        while i < len && hl[i] == kind { i += 1; }
+        while i < len && !text.is_char_boundary(i) { i += 1; }
+        let fmt = match kind {
+            1 => &filter_fmt,
+            2 => &find_fmt,
+            _ => &default_fmt,
+        };
+        job.append(&text[start..i], 0.0, fmt.clone());
+    }
+    job
 }
 
 impl LogViewer {
@@ -140,15 +218,26 @@ impl LogViewer {
                 .and_then(|(_, p)| p.clone());
 
             if let Some(entry) = store.entries.get(entry_idx) {
+                let is_json = pretty_msg.is_some();
+                let is_bookmarked = bookmarks.contains(&entry_idx);
+                // Position within the currently filtered ("shown") list.
+                let shown_pos = filtered_indices.iter().position(|&i| i == entry_idx);
+                let total_shown = filtered_indices.len();
+
                 egui::TopBottomPanel::bottom("detail_panel")
                     .resizable(true)
-                    .default_height(180.0)
+                    .default_height(200.0)
                     .min_height(80.0)
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.strong("Row Detail");
+                            if is_bookmarked {
+                                ui.label(egui::RichText::new("\u{2605} bookmarked")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(255, 200, 50)));
+                            }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("X Close").clicked() {
+                                if ui.small_button("\u{2715} Close").clicked() {
                                     self.selected_entry = None;
                                 }
                                 if show_context_button {
@@ -171,8 +260,17 @@ impl LogViewer {
                                         ui.label(egui::RichText::new(format!("{}", entry.line_num)).monospace());
                                         ui.end_row();
 
+                                        ui.label(egui::RichText::new("Position:").strong());
+                                        let pos_text = match shown_pos {
+                                            Some(p) => format!("row {} of {} shown", p + 1, total_shown),
+                                            None => format!("{} shown", total_shown),
+                                        };
+                                        ui.label(egui::RichText::new(pos_text).monospace());
+                                        ui.end_row();
+
                                         ui.label(egui::RichText::new("Timestamp:").strong());
-                                        ui.label(egui::RichText::new(&entry.timestamp).monospace());
+                                        let ts = if entry.timestamp.is_empty() { "\u{2014}" } else { entry.timestamp.as_str() };
+                                        ui.label(egui::RichText::new(ts).monospace());
                                         ui.end_row();
 
                                         ui.label(egui::RichText::new("Priority:").strong());
@@ -182,35 +280,84 @@ impl LogViewer {
                                         ui.end_row();
 
                                         ui.label(egui::RichText::new("Service:").strong());
-                                        ui.label(egui::RichText::new(&entry.service)
+                                        let svc = if entry.service.is_empty() { "\u{2014}" } else { entry.service.as_str() };
+                                        ui.label(egui::RichText::new(svc)
                                             .monospace()
                                             .color(egui::Color32::from_rgb(130, 200, 255)));
+                                        ui.end_row();
+
+                                        ui.label(egui::RichText::new("Length:").strong());
+                                        ui.label(egui::RichText::new(format!(
+                                            "{} chars",
+                                            entry.message.chars().count()
+                                        )).monospace());
                                         ui.end_row();
                                     });
 
                                 ui.separator();
-                                ui.label(egui::RichText::new("Message:").strong());
 
-                                if let Some(ref pretty) = pretty_msg {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(pretty.as_str())
-                                                .monospace()
-                                                .color(egui::Color32::from_rgb(180, 230, 140)),
-                                        )
-                                        .wrap_mode(egui::TextWrapMode::Extend)
-                                        .selectable(true),
-                                    );
+                                // Message header row: label + JSON badge + view toggles.
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Message:").strong());
+                                    if is_json {
+                                        ui.label(egui::RichText::new("JSON")
+                                            .small()
+                                            .strong()
+                                            .color(egui::Color32::BLACK)
+                                            .background_color(egui::Color32::from_rgb(120, 200, 140)));
+                                    }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.toggle_value(&mut self.detail_wrap, "Wrap");
+                                        if is_json {
+                                            // Two-state toggle: Pretty <-> Raw.
+                                            if ui.selectable_label(!self.detail_show_raw, "Pretty").clicked() {
+                                                self.detail_show_raw = false;
+                                            }
+                                            if ui.selectable_label(self.detail_show_raw, "Raw").clicked() {
+                                                self.detail_show_raw = true;
+                                            }
+                                        }
+                                    });
+                                });
+
+                                // Choose displayed text + base color.
+                                let show_pretty = is_json && !self.detail_show_raw;
+                                let (display_text, base_color): (&str, egui::Color32) = if show_pretty {
+                                    (pretty_msg.as_deref().unwrap_or(&entry.message),
+                                     egui::Color32::from_rgb(180, 230, 140))
                                 } else {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.message)
-                                                .monospace()
-                                                .color(egui::Color32::from_rgb(220, 220, 220)),
-                                        )
-                                        .wrap_mode(egui::TextWrapMode::Wrap)
-                                        .selectable(true),
-                                    );
+                                    (entry.message.as_str(),
+                                     egui::Color32::from_rgb(220, 220, 220))
+                                };
+
+                                // Build the message text with find/filter highlights applied.
+                                let mut job = build_highlight_job(
+                                    display_text,
+                                    filter.pattern.as_ref(),
+                                    find_pattern,
+                                    base_color,
+                                );
+
+                                let frame = egui::Frame::group(ui.style())
+                                    .fill(egui::Color32::from_rgb(24, 24, 28))
+                                    .inner_margin(egui::Margin::same(6));
+
+                                if self.detail_wrap {
+                                    job.wrap.max_width = ui.available_width() - 24.0;
+                                    job.wrap.break_anywhere = true;
+                                    frame.show(ui, |ui| {
+                                        ui.add(egui::Label::new(job).selectable(true));
+                                    });
+                                } else {
+                                    job.wrap.max_width = f32::INFINITY;
+                                    frame.show(ui, |ui| {
+                                        egui::ScrollArea::horizontal()
+                                            .id_salt("detail_msg_hscroll")
+                                            .auto_shrink([false, true])
+                                            .show(ui, |ui| {
+                                                ui.add(egui::Label::new(job).selectable(true));
+                                            });
+                                    });
                                 }
                             });
                     });

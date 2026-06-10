@@ -326,3 +326,69 @@
             });
         });
     }
+
+    // --- detail panel: raw/wrap rendering ---
+
+    #[test]
+    fn show_detail_raw_json_renders_without_panic() {
+        let mut store = LogStore::new();
+        store.entries.push(make_entry(1, "app", 6, r#"{"key":"value"}"#));
+        let filtered = vec![0];
+        let filter = FilterCriteria::default();
+        let bookmarks = std::collections::HashSet::new();
+        let mut viewer = LogViewer::default();
+        viewer.selected_entry = Some(0);
+        viewer.detail_show_raw = true;
+        viewer.detail_wrap = false;
+        run_ui(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show(ui, &store, &filtered, &filter, None, None, false, false, &bookmarks);
+            });
+        });
+    }
+
+    #[test]
+    fn show_detail_plaintext_no_timestamp_no_service() {
+        let mut store = LogStore::new();
+        let mut e = make_entry(1, "", 6, "raw plaintext line with no fields");
+        e.timestamp = String::new();
+        store.entries.push(e);
+        let filtered = vec![0];
+        let filter = FilterCriteria::default();
+        let bookmarks = std::collections::HashSet::new();
+        let mut viewer = LogViewer::default();
+        viewer.selected_entry = Some(0);
+        run_ui(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show(ui, &store, &filtered, &filter, None, None, false, false, &bookmarks);
+            });
+        });
+    }
+
+    // --- build_highlight_job ---
+
+    #[test]
+    fn build_highlight_job_no_patterns_single_section() {
+        let job = build_highlight_job("hello world", None, None, egui::Color32::WHITE);
+        assert_eq!(job.text, "hello world");
+        assert_eq!(job.sections.len(), 1);
+    }
+
+    #[test]
+    fn build_highlight_job_filter_splits_sections() {
+        let re = regex::Regex::new("error").unwrap();
+        let job = build_highlight_job("an error here", Some(&re), None, egui::Color32::WHITE);
+        // "an ", "error", " here" -> 3 sections; the match has a background.
+        assert_eq!(job.text, "an error here");
+        assert_eq!(job.sections.len(), 3);
+        assert_ne!(job.sections[1].format.background, egui::Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn build_highlight_job_find_takes_priority_over_filter() {
+        let filter = regex::Regex::new("abc").unwrap();
+        let find = regex::Regex::new("abc").unwrap();
+        let job = build_highlight_job("abc", Some(&filter), Some(&find), egui::Color32::WHITE);
+        // Find green wins where they overlap.
+        assert_eq!(job.sections[0].format.background, egui::Color32::from_rgb(80, 200, 120));
+    }
