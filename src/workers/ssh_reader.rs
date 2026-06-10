@@ -3,9 +3,8 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use crossbeam_channel::{Sender, Receiver};
 use ssh2::Session;
-use crate::analyzer::LogEntry;
 use crate::background::{BackgroundMessage, BackgroundCommand};
-use crate::journalctl::JournalEntry;
+use crate::workers::parser::parse_log_line;
 
 #[derive(Clone)]
 pub enum AuthMethod {
@@ -77,7 +76,6 @@ fn do_ssh(config: &SshConfig, tx: &Sender<BackgroundMessage>, cmd_rx: &Receiver<
     let reader = std::io::BufReader::new(channel.stream(0));
     let mut lines_read = 0usize;
     let mut entries_sent = 0usize;
-    let mut parse_errors = 0usize;
 
     for line_result in reader.lines() {
         // Check for cancel/disconnect commands (non-blocking)
@@ -98,13 +96,10 @@ fn do_ssh(config: &SshConfig, tx: &Sender<BackgroundMessage>, cmd_rx: &Receiver<
         };
 
         lines_read += 1;
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
 
-        if let Some(entry) = parse_ssh_line(&line, &mut parse_errors) {
-            let log_entry = journal_to_log_entry(lines_read, &entry);
+        // Shared parser handles every format and keeps unrecognized lines as
+        // raw entries; it only returns None for blank lines.
+        if let Some(log_entry) = parse_log_line(&line, lines_read) {
             if tx.send(BackgroundMessage::Entry(log_entry)).is_err() {
                 return Ok(());
             }
@@ -125,45 +120,6 @@ fn do_ssh(config: &SshConfig, tx: &Sender<BackgroundMessage>, cmd_rx: &Receiver<
     });
 
     Ok(())
-}
-
-fn parse_ssh_line(line: &str, parse_errors: &mut usize) -> Option<JournalEntry> {
-    if line.starts_with('{') {
-        if let Ok(entry) = serde_json::from_str::<JournalEntry>(line) {
-            return Some(entry);
-        }
-    }
-
-    if let Some(entry) = JournalEntry::from_syslog_line(line) {
-        return Some(entry);
-    }
-
-    *parse_errors += 1;
-    None
-}
-
-fn journal_to_log_entry(line_num: usize, entry: &JournalEntry) -> LogEntry {
-    let timestamp = entry.timestamp_micros()
-        .and_then(|us| {
-            let secs = us / 1_000_000;
-            let nsecs = ((us % 1_000_000) * 1_000) as u32;
-            chrono::DateTime::from_timestamp(secs, nsecs).map(|dt| {
-                if nsecs == 0 {
-                    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                } else {
-                    dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                }
-            })
-        })
-        .unwrap_or_default();
-
-    LogEntry {
-        line_num,
-        timestamp,
-        priority: entry.priority_num(),
-        service: entry.service(),
-        message: entry.msg().to_string(),
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
     use super::*;
-    use crate::journalctl::JournalEntry;
 
     // --- do_read integration ---
+    // Per-format parsing unit tests live in parser_tests.rs (the shared parser).
 
     fn write_tmp(label: &str, content: &str) -> String {
         use std::io::Write;
@@ -73,7 +73,7 @@
 
         let content = "2026-01-01 10:00:00 sshd[6]: Connected\n\
                         {\"__REALTIME_TIMESTAMP\":\"1700000000000000\",\"PRIORITY\":\"3\",\"SYSLOG_IDENTIFIER\":\"kernel\",\"MESSAGE\":\"oops\"}\n\
-                        this is garbage and should be skipped\n";
+                        this line has no recognizable format\n";
         let path = write_tmp("mixed", content);
         let (tx, rx) = unbounded::<BackgroundMessage>();
         do_read(&path, &tx).unwrap();
@@ -81,7 +81,60 @@
 
         let (entries, completed) = drain_channel(&rx);
         assert!(completed);
+        // The unrecognized line is now kept as a raw entry rather than dropped.
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].message, "this line has no recognizable format");
+        assert!(entries[2].timestamp.is_empty());
+        assert!(entries[2].service.is_empty());
+    }
+
+    #[test]
+    fn do_read_plaintext_no_timestamp_no_service() {
+        use crossbeam_channel::unbounded;
+        use crate::background::BackgroundMessage;
+
+        // A free-form plaintext file with no timestamps or services at all.
+        let content = "Starting up the application\n\
+                        Something failed badly\n\
+                        all done\n";
+        let path = write_tmp("rawplain", content);
+        let (tx, rx) = unbounded::<BackgroundMessage>();
+        do_read(&path, &tx).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let (entries, completed) = drain_channel(&rx);
+        assert!(completed);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].message, "Starting up the application");
+        assert!(entries[0].timestamp.is_empty());
+        assert!(entries[0].service.is_empty());
+        // priority is inferred from content: "failed" -> error (3)
+        assert_eq!(entries[1].priority, 3);
+    }
+
+    #[test]
+    fn do_read_iso_file() {
+        use crossbeam_channel::unbounded;
+        use crate::background::BackgroundMessage;
+
+        let content = "2024-01-15T10:30:45.123Z myhost sshd[1234]: Accepted publickey\n\
+                        2024-01-15T10:30:46+02:00 application started successfully\n";
+        let path = write_tmp("iso", content);
+        let (tx, rx) = unbounded::<BackgroundMessage>();
+        do_read(&path, &tx).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let (entries, completed) = drain_channel(&rx);
+        assert!(completed);
         assert_eq!(entries.len(), 2);
+        // 'T' separator normalized to space; fraction + zone preserved.
+        assert_eq!(entries[0].timestamp, "2024-01-15 10:30:45.123Z");
+        assert_eq!(entries[0].service, "sshd");
+        assert_eq!(entries[0].message, "Accepted publickey");
+        // No service prefix -> whole remainder is the message.
+        assert_eq!(entries[1].timestamp, "2024-01-15 10:30:46+02:00");
+        assert!(entries[1].service.is_empty());
+        assert_eq!(entries[1].message, "application started successfully");
     }
 
     #[test]
@@ -118,128 +171,4 @@
         assert_eq!(entries[0].service, "sshd");
         assert_eq!(entries[0].timestamp, "2026-01-01 10:00:00.123456");
         assert_eq!(entries[1].service, "kernel");
-    }
-
-    // --- parse_line ---
-
-    #[test]
-    fn parse_line_valid_json_journal_entry() {
-        let json = r#"{"__REALTIME_TIMESTAMP":"1700000000000000","PRIORITY":"6","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"hello"}"#;
-        let entry = parse_line(json, &mut 0).unwrap();
-        assert_eq!(entry.service(), "sshd");
-        assert_eq!(entry.msg(), "hello");
-    }
-
-    #[test]
-    fn parse_line_syslog_format() {
-        let line = "May 29 10:30:45 host sshd[1234]: Accepted publickey";
-        let entry = parse_line(line, &mut 0).unwrap();
-        assert_eq!(entry.service(), "sshd");
-        assert_eq!(entry.msg(), "Accepted publickey");
-    }
-
-    #[test]
-    fn parse_line_empty_returns_none() {
-        assert!(parse_line("", &mut 0).is_none());
-        assert!(parse_line("   ", &mut 0).is_none());
-    }
-
-    #[test]
-    fn parse_line_garbage_returns_none() {
-        assert!(parse_line("not a log line", &mut 0).is_none());
-    }
-
-    #[test]
-    fn parse_line_invalid_json_returns_none() {
-        assert!(parse_line("{not valid json}", &mut 0).is_none());
-    }
-
-    // --- journal_to_log_entry with microseconds ---
-
-    #[test]
-    fn journal_to_log_entry_with_microseconds() {
-        let e = JournalEntry {
-            realtime_timestamp: Some("1700000000123456".to_string()),
-            priority: Some("4".to_string()),
-            syslog_identifier: Some("nginx".to_string()),
-            systemd_unit: None,
-            message: Some("warn msg".to_string()),
-        };
-        let entry = journal_to_log_entry(1, &e);
-        assert_eq!(entry.service, "nginx");
-        assert_eq!(entry.priority, 4);
-        assert!(entry.timestamp.contains('.'), "should have microseconds: {}", entry.timestamp);
-    }
-
-    #[test]
-    fn journal_to_log_entry_whole_seconds() {
-        // timestamp evenly divisible by 1_000_000 → no fractional part
-        let e = JournalEntry {
-            realtime_timestamp: Some("1700000000000000".to_string()),
-            priority: Some("6".to_string()),
-            syslog_identifier: Some("sshd".to_string()),
-            systemd_unit: None,
-            message: Some("connected".to_string()),
-        };
-        let entry = journal_to_log_entry(1, &e);
-        assert!(!entry.timestamp.contains('.'), "should have no fractional: {}", entry.timestamp);
-    }
-
-    #[test]
-    fn journal_to_log_entry_missing_timestamp() {
-        let e = JournalEntry {
-            realtime_timestamp: None,
-            priority: Some("6".to_string()),
-            syslog_identifier: Some("sshd".to_string()),
-            systemd_unit: None,
-            message: Some("hello".to_string()),
-        };
-        let entry = journal_to_log_entry(5, &e);
-        assert!(entry.timestamp.is_empty());
-        assert_eq!(entry.line_num, 5);
-    }
-
-    // --- plaintext parsing ---
-
-    #[test]
-    fn plaintext_seconds_precision() {
-        let entry = parse_saved_line("2026-02-11 10:30:45 sshd[6]: Connected", 1).unwrap();
-        assert_eq!(entry.timestamp, "2026-02-11 10:30:45");
-        assert_eq!(entry.service, "sshd");
-        assert_eq!(entry.priority, 6);
-        assert_eq!(entry.message, "Connected");
-    }
-
-    #[test]
-    fn plaintext_microsecond_precision() {
-        let entry = parse_saved_line("2026-02-11 10:30:45.123456 sshd[6]: Connected", 1).unwrap();
-        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.123456");
-        assert_eq!(entry.service, "sshd");
-        assert_eq!(entry.priority, 6);
-        assert_eq!(entry.message, "Connected");
-    }
-
-    #[test]
-    fn plaintext_empty_message() {
-        let entry = parse_saved_line("2026-02-11 10:30:45.000001 kernel[3]: ", 2).unwrap();
-        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.000001");
-        assert_eq!(entry.service, "kernel");
-        assert_eq!(entry.priority, 3);
-        assert_eq!(entry.message, "");
-    }
-
-    #[test]
-    fn saved_json_roundtrip() {
-        let line = r#"{"line":1,"timestamp":"2026-02-11 10:30:45.123456","priority":6,"service":"sshd","message":"Connected"}"#;
-        let entry = parse_saved_line(line, 5).unwrap();
-        assert_eq!(entry.timestamp, "2026-02-11 10:30:45.123456");
-        assert_eq!(entry.service, "sshd");
-        assert_eq!(entry.priority, 6);
-        assert_eq!(entry.message, "Connected");
-    }
-
-    #[test]
-    fn garbage_line_returns_none() {
-        assert!(parse_saved_line("not a log line at all", 1).is_none());
-        assert!(parse_saved_line("", 1).is_none());
     }

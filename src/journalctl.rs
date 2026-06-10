@@ -82,7 +82,7 @@ fn parse_syslog_timestamp(ts: &str) -> Option<i64> {
         .map(|dt| dt.and_utc().timestamp())
 }
 
-fn infer_priority(msg: &str) -> u8 {
+pub(crate) fn infer_priority(msg: &str) -> u8 {
     let msg_lower = msg.to_lowercase();
 
     if msg_lower.contains("panic") || msg_lower.contains("fatal") || msg_lower.contains("critical") {
