@@ -364,7 +364,15 @@ impl LogViewer {
             }
         }
 
-        // Log table
+        // Log table.
+        // Captured before entering the (horizontally scrolling) area, where
+        // `available_width` would be unbounded. Used to keep the inner vertical
+        // list at least viewport-wide so its scrollbar stays pinned to the
+        // window's right edge instead of hugging the widest visible row.
+        let viewport_width = ui.available_width();
+        let vbar_allowance = ui.spacing().scroll.bar_width
+            + ui.spacing().scroll.bar_inner_margin
+            + ui.spacing().scroll.bar_outer_margin;
         egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -420,6 +428,11 @@ impl LogViewer {
                 let mut hl_buf: Vec<u8> = Vec::new();
 
                 let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
+                    // Floor the content width to the viewport so the vertical
+                    // scrollbar stays at the window edge even when every visible
+                    // row is short. Wider rows still extend past this and scroll
+                    // horizontally via the outer area.
+                    ui.set_min_width((viewport_width - vbar_allowance).max(0.0));
                     for row_idx in row_range {
                         let entry_idx = filtered_indices[row_idx];
                         let entry = &store.entries[entry_idx];
