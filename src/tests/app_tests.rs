@@ -48,6 +48,11 @@
             saved_filter_bar: None,
             bookmarks: HashSet::new(),
             show_bookmarks: false,
+            saved_patterns: crate::ui::saved_patterns::SavedPatterns::default(),
+            test_cases: Vec::new(),
+            active_test_case: None,
+            test_case_dialog: crate::ui::testcase::TestCaseDialog::default(),
+            show_test_cases: false,
             memory_kb: 0,
             last_memory_check: std::time::Instant::now(),
         }
@@ -222,14 +227,14 @@
         assert!(!app.show_bookmarks);
     }
 
-    // --- write_export_plain ---
+    // --- log_writer::write_entries (plain text) ---
 
     #[test]
-    fn write_export_plain_writes_correct_format() {
-        let app = make_app();
+    fn write_entries_writes_correct_format() {
+        use crate::ui::save_settings::SaveFormat;
         let e = make_entry(1, "sshd", 6, "Connected");
         let path = std::path::PathBuf::from(format!("/tmp/jlog_export_test_{}.log", std::process::id()));
-        app.write_export_plain(&path, &[&e]).unwrap();
+        crate::workers::log_writer::write_entries(&path, &[&e], &SaveFormat::PlainText).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(content.contains("sshd[6]: Connected"));
@@ -237,12 +242,12 @@
     }
 
     #[test]
-    fn write_export_plain_multiple_entries() {
-        let app = make_app();
+    fn write_entries_multiple_entries() {
+        use crate::ui::save_settings::SaveFormat;
         let e1 = make_entry(1, "sshd", 6, "msg1");
         let e2 = make_entry(2, "kernel", 3, "msg2");
         let path = std::path::PathBuf::from(format!("/tmp/jlog_export_multi_test_{}.log", std::process::id()));
-        app.write_export_plain(&path, &[&e1, &e2]).unwrap();
+        crate::workers::log_writer::write_entries(&path, &[&e1, &e2], &SaveFormat::PlainText).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(content.contains("sshd[6]: msg1"));

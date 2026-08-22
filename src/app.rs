@@ -9,7 +9,9 @@ use crate::ui::connection_dialog::ConnectionDialog;
 use crate::ui::filter_bar::FilterBar;
 use crate::ui::log_viewer::{LogViewer, priority_label, priority_color};
 use crate::ui::open_file_dialog::OpenFileDialog;
-use crate::ui::save_settings::{SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
+use crate::ui::save_settings::{SaveFormat, SaveSettings, SaveSettingsDialog, load_settings, save_settings_to_disk};
+use crate::ui::saved_patterns::{SavedPatterns, load_patterns};
+use crate::ui::testcase::{TestCase, TestCaseDialog};
 use crate::workers::{file_reader, log_writer, ssh_reader};
 
 fn read_memory_kb() -> u64 {
@@ -84,6 +86,16 @@ pub struct JlogApp {
     bookmarks: HashSet<usize>,
     /// Whether the bookmark/timeline window is open
     show_bookmarks: bool,
+
+    /// Named regexes saved for reuse (persisted to disk).
+    saved_patterns: SavedPatterns,
+
+    /// Test cases recorded this session.
+    test_cases: Vec<TestCase>,
+    /// Index into `test_cases` of the one currently recording, if any.
+    active_test_case: Option<usize>,
+    test_case_dialog: TestCaseDialog,
+    show_test_cases: bool,
 
     memory_kb: u64,
     last_memory_check: std::time::Instant,
@@ -162,6 +174,13 @@ impl JlogApp {
             bookmarks: HashSet::new(),
             show_bookmarks: false,
 
+            saved_patterns: load_patterns(),
+
+            test_cases: Vec::new(),
+            active_test_case: None,
+            test_case_dialog: TestCaseDialog::default(),
+            show_test_cases: false,
+
             memory_kb: read_memory_kb(),
             last_memory_check: std::time::Instant::now(),
         }
@@ -220,6 +239,9 @@ impl JlogApp {
         self.filter = FilterCriteria::default();
         self.bookmarks.clear();
         self.show_bookmarks = false;
+        self.test_cases.clear();
+        self.active_test_case = None;
+        self.show_test_cases = false;
     }
 
     fn process_messages(&mut self) {
@@ -419,7 +441,7 @@ impl JlogApp {
             .map(|&i| &self.log_store.entries[i])
             .collect();
 
-        match self.write_export_plain(&path, &entries) {
+        match log_writer::write_entries(&path, &entries, &SaveFormat::PlainText) {
             Ok(()) => self.status_message = format!(
                 "Exported {} entries to {}",
                 entries.len(),
@@ -429,15 +451,125 @@ impl JlogApp {
         }
     }
 
-    fn write_export_plain(&self, path: &std::path::Path, entries: &[&crate::analyzer::LogEntry]) -> anyhow::Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::File::create(path)?;
-        for entry in entries {
-            writeln!(file, "{} {}[{}]: {}", entry.timestamp, entry.service, entry.priority, entry.message)?;
-        }
-        Ok(())
+    /// Replace characters unsafe for a filename with underscores.
+    fn sanitize_filename(s: &str) -> String {
+        let cleaned: String = s
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        if cleaned.is_empty() { "unnamed".to_string() } else { cleaned }
     }
 
+    fn format_ext(&self) -> &'static str {
+        match self.save_settings.format {
+            SaveFormat::Json => "json",
+            SaveFormat::PlainText => "log",
+        }
+    }
+
+    /// Write a single test case's captured entries to its own file. Returns the
+    /// path written on success.
+    fn export_test_case(&self, tc: &TestCase) -> anyhow::Result<String> {
+        let range = tc.range(self.log_store.entries.len());
+        let entries: Vec<&crate::analyzer::LogEntry> =
+            self.log_store.entries[range].iter().collect();
+
+        let filename = format!(
+            "testcase_{}_{}.{}",
+            Self::sanitize_filename(&tc.id),
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            self.format_ext(),
+        );
+        let path = std::path::Path::new(&self.save_settings.destination).join(filename);
+        log_writer::write_entries(&path, &entries, &self.save_settings.format)?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Write the full session ("mother") log capturing every entry.
+    fn export_session_log(&self) -> anyhow::Result<String> {
+        let entries: Vec<&crate::analyzer::LogEntry> = self.log_store.entries.iter().collect();
+        let filename = format!(
+            "session_{}_{}.{}",
+            Self::sanitize_filename(&self.current_host),
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            self.format_ext(),
+        );
+        let path = std::path::Path::new(&self.save_settings.destination).join(filename);
+        log_writer::write_entries(&path, &entries, &self.save_settings.format)?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Export every test case to a standalone file, plus the mother log when
+    /// more than one test case ran this session.
+    fn export_all_test_cases(&mut self) {
+        if self.test_cases.is_empty() {
+            self.status_message = "No test cases to export".to_string();
+            return;
+        }
+
+        let cases = self.test_cases.clone();
+        let mut written = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        for tc in &cases {
+            match self.export_test_case(tc) {
+                Ok(_) => written += 1,
+                Err(e) => errors.push(format!("{}: {}", tc.id, e)),
+            }
+        }
+
+        let mut mother = false;
+        if cases.len() > 1 {
+            match self.export_session_log() {
+                Ok(_) => mother = true,
+                Err(e) => errors.push(format!("session log: {}", e)),
+            }
+        }
+
+        if errors.is_empty() {
+            self.status_message = format!(
+                "Exported {} test case file(s){} to {}",
+                written,
+                if mother { " + session log" } else { "" },
+                self.save_settings.destination,
+            );
+        } else {
+            self.status_message = format!(
+                "Exported {} file(s), {} error(s): {}",
+                written,
+                errors.len(),
+                errors.join("; "),
+            );
+        }
+    }
+
+
+    fn start_test_case(&mut self, id: String, name: String, description: String) {
+        let start_entry = self.log_store.entries.len();
+        self.test_cases.push(TestCase {
+            id: id.clone(),
+            name,
+            description,
+            start_entry,
+            end_entry: None,
+        });
+        self.active_test_case = Some(self.test_cases.len() - 1);
+        self.status_message = format!("Recording test case '{}' from entry {}", id, start_entry);
+    }
+
+    fn stop_test_case(&mut self) {
+        if let Some(idx) = self.active_test_case.take() {
+            let end = self.log_store.entries.len();
+            if let Some(tc) = self.test_cases.get_mut(idx) {
+                tc.end_entry = Some(end);
+                let captured = end.saturating_sub(tc.start_entry);
+                self.status_message = format!(
+                    "Stopped test case '{}' — captured {} entries",
+                    tc.id, captured
+                );
+            }
+        }
+    }
 
     fn save_now(&mut self) {
         let entries: Vec<&crate::analyzer::LogEntry> = if self.save_settings.save_filtered_only {
@@ -564,6 +696,9 @@ impl eframe::App for JlogApp {
         if let Some(new_settings) = self.save_settings_dialog.show(ctx) {
             save_settings_to_disk(&new_settings);
             self.save_settings = new_settings;
+        }
+        if let Some((id, name, description)) = self.test_case_dialog.show(ctx) {
+            self.start_test_case(id, name, description);
         }
 
         // Help window
@@ -769,6 +904,24 @@ impl eframe::App for JlogApp {
                     }
                 });
 
+                ui.menu_button("Test Case", |ui| {
+                    let recording = self.active_test_case.is_some();
+                    if ui.add_enabled(!recording, egui::Button::new("Start Test Case...")).clicked() {
+                        ui.close_menu();
+                        self.test_case_dialog.open();
+                    }
+                    if ui.add_enabled(recording, egui::Button::new("Stop Test Case")).clicked() {
+                        ui.close_menu();
+                        self.stop_test_case();
+                    }
+                    ui.separator();
+                    let tc_label = format!("Test Cases ({})...", self.test_cases.len());
+                    if ui.button(tc_label).clicked() {
+                        ui.close_menu();
+                        self.show_test_cases = true;
+                    }
+                });
+
                 ui.menu_button("Help", |ui| {
                     if ui.button("Shortcuts & About...").clicked() {
                         self.show_help = true;
@@ -780,7 +933,7 @@ impl eframe::App for JlogApp {
 
         // Filter bar panel
         egui::TopBottomPanel::top("filter_bar").show(ctx, |ui| {
-            if self.filter_bar.show(ui, &self.cached_services, &mut self.filter) {
+            if self.filter_bar.show(ui, &self.cached_services, &mut self.filter, &mut self.saved_patterns) {
                 self.apply_filter();
             }
         });
@@ -937,6 +1090,11 @@ impl eframe::App for JlogApp {
         let mut reconnect_action = false;
         let mut disconnect_action = false;
         let mut connect_action = false;
+        let mut stop_tc_action = false;
+        let active_tc_id = self
+            .active_test_case
+            .and_then(|i| self.test_cases.get(i))
+            .map(|tc| tc.id.clone());
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if self.is_connected {
@@ -945,6 +1103,17 @@ impl eframe::App for JlogApp {
                     ui.colored_label(egui::Color32::YELLOW, "\u{25CF} Loading");
                 } else {
                     ui.colored_label(egui::Color32::GRAY, "\u{25CF} Idle");
+                }
+
+                if let Some(id) = &active_tc_id {
+                    ui.separator();
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 70, 70),
+                        format!("\u{25CF} REC — {}", id),
+                    );
+                    if ui.small_button("Stop").clicked() {
+                        stop_tc_action = true;
+                    }
                 }
 
                 // Quick action buttons for SSH mode
@@ -993,6 +1162,9 @@ impl eframe::App for JlogApp {
         }
         if connect_action {
             self.connection_dialog.open = true;
+        }
+        if stop_tc_action {
+            self.stop_test_case();
         }
 
         // Handle "Show in Context" request (before rendering panels so data is ready this frame)
@@ -1137,6 +1309,137 @@ impl eframe::App for JlogApp {
                 } else {
                     self.status_message = "Bookmarked entry is hidden by the active filter".to_string();
                 }
+            }
+        }
+
+        // Test Cases window
+        if self.show_test_cases {
+            let mut open = self.show_test_cases;
+            let total_entries = self.log_store.entries.len();
+            let mut export_idx: Option<usize> = None;
+            let mut remove_idx: Option<usize> = None;
+            let mut view_range: Option<(usize, usize)> = None;
+            let mut export_all = false;
+            let mut stop_from_window = false;
+
+            egui::Window::new(format!("Test Cases ({})", self.test_cases.len()))
+                .open(&mut open)
+                .resizable(true)
+                .default_size([720.0, 400.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!self.test_cases.is_empty(), egui::Button::new("Export All"))
+                            .on_hover_text("Write each test case to its own file (plus a session log when more than one exists)")
+                            .clicked()
+                        {
+                            export_all = true;
+                        }
+                        ui.label(egui::RichText::new(
+                            "Each test case exports to its own file; the full session log is saved alongside when several ran.",
+                        ).small().color(egui::Color32::from_rgb(160, 160, 160)));
+                    });
+                    ui.separator();
+
+                    if self.test_cases.is_empty() {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("No test cases yet.\nUse Test Case ▸ Start Test Case… to begin recording.");
+                        });
+                        return;
+                    }
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (i, tc) in self.test_cases.iter().enumerate() {
+                            let range = tc.range(total_entries);
+                            let count = range.len();
+                            let recording = tc.is_recording();
+
+                            ui.horizontal(|ui| {
+                                ui.strong(&tc.id);
+                                if !tc.name.is_empty() {
+                                    ui.label(egui::RichText::new(&tc.name).color(egui::Color32::from_rgb(130, 200, 255)));
+                                }
+                                if recording {
+                                    ui.colored_label(egui::Color32::from_rgb(230, 70, 70), "\u{25CF} recording");
+                                }
+                            });
+                            if !tc.description.is_empty() {
+                                ui.label(egui::RichText::new(&tc.description)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(180, 180, 180)));
+                            }
+                            ui.horizontal(|ui| {
+                                let range_text = if let (Some(first), Some(last)) = (
+                                    self.log_store.entries.get(range.start),
+                                    range.end.checked_sub(1).and_then(|e| self.log_store.entries.get(e)),
+                                ) {
+                                    format!("Line# {}–{} · {} entries", first.line_num, last.line_num, count)
+                                } else {
+                                    format!("{} entries", count)
+                                };
+                                ui.label(egui::RichText::new(range_text).monospace()
+                                    .color(egui::Color32::from_rgb(150, 150, 150)));
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Remove").clicked() {
+                                        remove_idx = Some(i);
+                                    }
+                                    if recording {
+                                        if ui.small_button("Stop").clicked() {
+                                            stop_from_window = true;
+                                        }
+                                    } else {
+                                        if ui.add_enabled(count > 0, egui::Button::new("Export").small()).clicked() {
+                                            export_idx = Some(i);
+                                        }
+                                        if let (Some(first), Some(last)) = (
+                                            self.log_store.entries.get(range.start),
+                                            range.end.checked_sub(1).and_then(|e| self.log_store.entries.get(e)),
+                                        ) {
+                                            let (fl, ll) = (first.line_num, last.line_num);
+                                            if ui.add_enabled(count > 0, egui::Button::new("View").small())
+                                                .on_hover_text("Filter the table to this test case's Line# range")
+                                                .clicked()
+                                            {
+                                                view_range = Some((fl, ll));
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                            ui.separator();
+                        }
+                    });
+                });
+
+            self.show_test_cases = open;
+
+            if stop_from_window {
+                self.stop_test_case();
+            }
+            if let Some(i) = remove_idx {
+                if self.active_test_case == Some(i) {
+                    self.active_test_case = None;
+                } else if let Some(active) = self.active_test_case {
+                    if active > i {
+                        self.active_test_case = Some(active - 1);
+                    }
+                }
+                self.test_cases.remove(i);
+            }
+            if let Some(i) = export_idx {
+                if let Some(tc) = self.test_cases.get(i).cloned() {
+                    match self.export_test_case(&tc) {
+                        Ok(path) => self.status_message = format!("Exported test case '{}' to {}", tc.id, path),
+                        Err(e) => self.status_message = format!("Export error: {}", e),
+                    }
+                }
+            }
+            if export_all {
+                self.export_all_test_cases();
+            }
+            if let Some((from, to)) = view_range {
+                self.filter_bar.set_line_range(from, to, &mut self.filter);
+                self.apply_filter();
             }
         }
 

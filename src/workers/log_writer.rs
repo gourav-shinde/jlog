@@ -9,15 +9,24 @@ pub fn save_logs(
     host: &str,
 ) -> anyhow::Result<String> {
     let path = settings.resolve_filename(host);
+    write_entries(std::path::Path::new(&path), entries, &settings.format)?;
+    Ok(path)
+}
 
-    // Create destination directory
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+/// Write `entries` to `path` in the given format, creating parent directories as
+/// needed. Shared by session saves, filtered exports, and test-case exports.
+pub fn write_entries(
+    path: &std::path::Path,
+    entries: &[&LogEntry],
+    format: &SaveFormat,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = std::fs::File::create(&path)?;
+    let mut file = std::fs::File::create(path)?;
 
-    match settings.format {
+    match format {
         SaveFormat::Json => {
             for entry in entries {
                 let obj = serde_json::json!({
@@ -42,7 +51,7 @@ pub fn save_logs(
         }
     }
 
-    Ok(path)
+    Ok(())
 }
 
 #[cfg(test)]

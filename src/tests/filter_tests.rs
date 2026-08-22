@@ -224,3 +224,52 @@
         // wrong message
         assert!(!f.matches(&make_entry("sshd", 3, "connected")));
     }
+
+    // --- line-number range filter ---
+
+    fn make_entry_line(line_num: usize) -> LogEntry {
+        LogEntry {
+            line_num,
+            timestamp: "2026-01-01 00:00:00".to_string(),
+            priority: 6,
+            service: "svc".to_string(),
+            message: "msg".to_string(),
+        }
+    }
+
+    #[test]
+    fn line_range_both_bounds_inclusive() {
+        let mut f = default_filter();
+        f.min_line = Some(10);
+        f.max_line = Some(20);
+        assert!(!f.matches(&make_entry_line(9)));
+        assert!(f.matches(&make_entry_line(10)));
+        assert!(f.matches(&make_entry_line(15)));
+        assert!(f.matches(&make_entry_line(20)));
+        assert!(!f.matches(&make_entry_line(21)));
+    }
+
+    #[test]
+    fn line_range_open_ended_lower() {
+        let mut f = default_filter();
+        f.max_line = Some(5);
+        assert!(f.matches(&make_entry_line(1)));
+        assert!(f.matches(&make_entry_line(5)));
+        assert!(!f.matches(&make_entry_line(6)));
+    }
+
+    #[test]
+    fn line_range_open_ended_upper() {
+        let mut f = default_filter();
+        f.min_line = Some(5);
+        assert!(!f.matches(&make_entry_line(4)));
+        assert!(f.matches(&make_entry_line(5)));
+        assert!(f.matches(&make_entry_line(9999)));
+    }
+
+    #[test]
+    fn line_range_unset_matches_all() {
+        let f = default_filter();
+        assert!(f.matches(&make_entry_line(1)));
+        assert!(f.matches(&make_entry_line(usize::MAX)));
+    }

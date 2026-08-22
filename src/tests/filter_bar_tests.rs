@@ -1,5 +1,6 @@
     use super::*;
     use crate::analyzer::FilterCriteria;
+    use crate::ui::saved_patterns::SavedPatterns;
 
     // --- priority_max ---
 
@@ -115,6 +116,48 @@
         assert!(filter.pattern2.is_none());
     }
 
+    // --- line-range fields ---
+
+    #[test]
+    fn is_active_when_line_bound_set() {
+        let mut bar = FilterBar::default();
+        bar.line_from_text = "10".to_string();
+        assert!(bar.is_active());
+    }
+
+    #[test]
+    fn apply_to_filter_sets_line_range() {
+        let mut bar = FilterBar::default();
+        bar.line_from_text = "10".to_string();
+        bar.line_to_text = "20".to_string();
+        let mut filter = FilterCriteria::default();
+        bar.apply_to_filter(&mut filter);
+        assert_eq!(filter.min_line, Some(10));
+        assert_eq!(filter.max_line, Some(20));
+    }
+
+    #[test]
+    fn apply_to_filter_ignores_non_numeric_line_bounds() {
+        let mut bar = FilterBar::default();
+        bar.line_from_text = "abc".to_string();
+        bar.line_to_text = "  ".to_string();
+        let mut filter = FilterCriteria::default();
+        bar.apply_to_filter(&mut filter);
+        assert_eq!(filter.min_line, None);
+        assert_eq!(filter.max_line, None);
+    }
+
+    #[test]
+    fn set_line_range_updates_fields_and_filter() {
+        let mut bar = FilterBar::default();
+        let mut filter = FilterCriteria::default();
+        bar.set_line_range(5, 42, &mut filter);
+        assert_eq!(bar.line_from_text, "5");
+        assert_eq!(bar.line_to_text, "42");
+        assert_eq!(filter.min_line, Some(5));
+        assert_eq!(filter.max_line, Some(42));
+    }
+
     // --- headless egui: show() ---
 
     fn run_ui(mut f: impl FnMut(&egui::Context)) {
@@ -130,7 +173,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &services, &mut filter);
+                bar.show(ui, &services, &mut filter, &mut SavedPatterns::default());
             });
         });
     }
@@ -146,7 +189,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &services, &mut filter);
+                bar.show(ui, &services, &mut filter, &mut SavedPatterns::default());
             });
         });
     }
@@ -160,7 +203,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &services, &mut filter);
+                bar.show(ui, &services, &mut filter, &mut SavedPatterns::default());
             });
         });
     }
@@ -174,7 +217,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &services, &mut filter);
+                bar.show(ui, &services, &mut filter, &mut SavedPatterns::default());
             });
         });
     }
@@ -188,7 +231,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &[], &mut filter);
+                bar.show(ui, &[], &mut filter, &mut SavedPatterns::default());
             });
         });
     }
@@ -201,7 +244,7 @@
 
         run_ui(|ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, &[], &mut filter);
+                bar.show(ui, &[], &mut filter, &mut SavedPatterns::default());
             });
         });
     }

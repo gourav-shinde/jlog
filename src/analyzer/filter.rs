@@ -17,6 +17,10 @@ pub struct FilterCriteria {
     pub pattern: Option<Regex>,
     pub pattern2: Option<Regex>,
     pub combine_mode: CombineMode,
+    /// Inclusive lower bound on `LogEntry.line_num`; `None` means unbounded.
+    pub min_line: Option<usize>,
+    /// Inclusive upper bound on `LogEntry.line_num`; `None` means unbounded.
+    pub max_line: Option<usize>,
 }
 
 impl Default for FilterCriteria {
@@ -27,6 +31,8 @@ impl Default for FilterCriteria {
             pattern: None,
             pattern2: None,
             combine_mode: CombineMode::Match,
+            min_line: None,
+            max_line: None,
         }
     }
 }
@@ -34,6 +40,17 @@ impl Default for FilterCriteria {
 impl FilterCriteria {
     /// Check if a LogEntry passes all filters
     pub fn matches(&self, entry: &LogEntry) -> bool {
+        if let Some(min) = self.min_line {
+            if entry.line_num < min {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_line {
+            if entry.line_num > max {
+                return false;
+            }
+        }
+
         if entry.priority > self.max_priority {
             return false;
         }

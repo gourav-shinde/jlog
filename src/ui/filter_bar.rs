@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use eframe::egui;
 use crate::analyzer::{FilterCriteria, CombineMode};
+use crate::ui::saved_patterns::{SavedPatterns, save_patterns_to_disk};
 
 #[derive(Clone)]
 pub struct FilterBar {
@@ -13,6 +14,15 @@ pub struct FilterBar {
     pub service_highlight: Option<usize>, // keyboard-nav index in dropdown (0 = "All")
     pub priority_choice: usize,   // index into PRIORITY_LABELS
     pub combine_mode: CombineMode,
+    pub line_from_text: String,   // inclusive lower Line# bound (empty = unbounded)
+    pub line_to_text: String,     // inclusive upper Line# bound (empty = unbounded)
+    pub new_pattern_name: String, // transient input for the "save pattern" popup
+}
+
+/// Parse a Line# bound field: empty or non-numeric yields `None`.
+fn parse_line_bound(text: &str) -> Option<usize> {
+    let t = text.trim();
+    if t.is_empty() { None } else { t.parse().ok() }
 }
 
 const PRIORITY_LABELS: &[&str] = &[
@@ -56,6 +66,9 @@ impl Default for FilterBar {
             service_highlight: None,
             priority_choice: 0,
             combine_mode: CombineMode::Match,
+            line_from_text: String::new(),
+            line_to_text: String::new(),
+            new_pattern_name: String::new(),
         }
     }
 }
@@ -68,6 +81,8 @@ impl FilterBar {
             || !self.selected_services.is_empty()
             || self.priority_choice != 0
             || self.combine_mode != CombineMode::Match
+            || !self.line_from_text.trim().is_empty()
+            || !self.line_to_text.trim().is_empty()
     }
 
     /// Reconstruct a FilterCriteria from the bar's current state.
@@ -82,10 +97,27 @@ impl FilterBar {
         filter.units = self.selected_services.clone();
         filter.max_priority = priority_max(self.priority_choice);
         filter.combine_mode = self.combine_mode;
+        filter.min_line = parse_line_bound(&self.line_from_text);
+        filter.max_line = parse_line_bound(&self.line_to_text);
+    }
+
+    /// Set the Line# range fields from a test case's captured span and push the
+    /// change into `filter`. Returns without clearing other active filters.
+    pub fn set_line_range(&mut self, from: usize, to: usize, filter: &mut FilterCriteria) {
+        self.line_from_text = from.to_string();
+        self.line_to_text = to.to_string();
+        filter.min_line = Some(from);
+        filter.max_line = Some(to);
     }
 
     /// Show filter bar UI. Returns true if filter changed.
-    pub fn show(&mut self, ui: &mut egui::Ui, services: &[String], filter: &mut FilterCriteria) -> bool {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &[String],
+        filter: &mut FilterCriteria,
+        saved_patterns: &mut SavedPatterns,
+    ) -> bool {
         let mut changed = false;
 
         ui.horizontal(|ui| {
@@ -102,6 +134,80 @@ impl FilterBar {
                 if self.pattern_valid {
                     changed = true;
                 }
+            }
+
+            // Save the current pattern under a name.
+            let save_resp = ui.button("\u{2605} Save");
+            let save_popup_id = ui.make_persistent_id("save_pattern_popup");
+            if save_resp.clicked() {
+                self.new_pattern_name.clear();
+                ui.memory_mut(|m| m.toggle_popup(save_popup_id));
+            }
+            egui::popup_below_widget(
+                ui,
+                save_popup_id,
+                &save_resp,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label("Save pattern as:");
+                    let name_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.new_pattern_name)
+                            .hint_text("name..."),
+                    );
+                    let enter = name_resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let can_save = !self.new_pattern_name.trim().is_empty()
+                        && !self.pattern_text.is_empty();
+                    if (ui.button("Save").clicked() || enter) && can_save {
+                        saved_patterns.upsert(&self.new_pattern_name, &self.pattern_text);
+                        save_patterns_to_disk(saved_patterns);
+                        self.new_pattern_name.clear();
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                    if self.pattern_text.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 160, 60),
+                            "Enter a pattern first.",
+                        );
+                    }
+                },
+            );
+
+            // Load / delete a saved pattern.
+            let mut load_pattern: Option<String> = None;
+            let mut delete_pattern: Option<String> = None;
+            egui::ComboBox::from_id_salt("saved_patterns_combo")
+                .selected_text("Saved \u{25be}")
+                .show_ui(ui, |ui| {
+                    if saved_patterns.patterns.is_empty() {
+                        ui.label(
+                            egui::RichText::new("(none saved)")
+                                .italics()
+                                .color(egui::Color32::from_rgb(140, 140, 140)),
+                        );
+                    }
+                    for np in &saved_patterns.patterns {
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(false, &np.name).clicked() {
+                                load_pattern = Some(np.pattern.clone());
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("\u{2715}").clicked() {
+                                    delete_pattern = Some(np.name.clone());
+                                }
+                            });
+                        });
+                    }
+                });
+            if let Some(pat) = load_pattern {
+                self.pattern_text = pat;
+                self.pattern_valid = filter.set_pattern(&self.pattern_text);
+                changed = true;
+            }
+            if let Some(name) = delete_pattern {
+                saved_patterns.remove(&name);
+                save_patterns_to_disk(saved_patterns);
             }
 
             // Combine mode buttons
@@ -311,6 +417,27 @@ impl FilterBar {
                     changed = true;
                 }
             }
+            ui.separator();
+
+            // Line# range filter.
+            ui.label("Line#");
+            let from_resp = ui.add(
+                egui::TextEdit::singleline(&mut self.line_from_text)
+                    .desired_width(60.0)
+                    .hint_text("from"),
+            );
+            ui.label("\u{2013}");
+            let to_resp = ui.add(
+                egui::TextEdit::singleline(&mut self.line_to_text)
+                    .desired_width(60.0)
+                    .hint_text("to"),
+            );
+            if from_resp.changed() || to_resp.changed() {
+                filter.min_line = parse_line_bound(&self.line_from_text);
+                filter.max_line = parse_line_bound(&self.line_to_text);
+                changed = true;
+            }
+
             if ui.small_button("Clear").clicked() {
                 self.pattern_text.clear();
                 self.pattern2_text.clear();
@@ -318,6 +445,8 @@ impl FilterBar {
                 self.service_search.clear();
                 self.priority_choice = 0;
                 self.combine_mode = CombineMode::Match;
+                self.line_from_text.clear();
+                self.line_to_text.clear();
                 *filter = FilterCriteria::default();
                 self.pattern_valid = true;
                 self.pattern2_valid = true;
